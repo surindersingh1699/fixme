@@ -1,0 +1,21 @@
+Module: screenshot
+Purpose: Capture the primary monitor screen on Windows and save as a temporary PNG file.
+
+Input: None
+Output: str — absolute path to the saved temporary PNG file
+
+Dependencies: mss, tempfile, os
+
+Behavior:
+- Use the `mss` library to capture only the primary monitor (monitors[1]).
+- Save the capture as a PNG to a temporary file using `tempfile.NamedTemporaryFile(suffix=".png", delete=False)`.
+- After saving, verify the file size is greater than 1000 bytes. If it is smaller, raise a PermissionError with a message instructing the user to check screen capture permissions.
+- Return the absolute file path as a string.
+- The caller is responsible for deleting the temporary file after use.
+
+Function signature:
+    def take_screenshot() -> str
+
+Edge cases:
+- If mss fails to initialize, raise RuntimeError with a descriptive message.
+- If the file is unexpectedly empty or tiny (<1KB), treat it as a permission issue.

@@ -1,0 +1,31 @@
+Module: tts
+Purpose: Convert text to speech using ElevenLabs API, supporting English and Spanish. For Spanish, translate text via Claude first.
+
+Input: text: str, lang: str ("en" or "es")
+Output: None (plays audio as side effect)
+
+Dependencies: elevenlabs, anthropic, tempfile, os, subprocess
+
+Behavior:
+- Provide a `speak(text: str, lang: str = "en") -> None` function.
+- If lang is "es", first translate the text to Spanish using Claude API (anthropic.Anthropic, model claude-sonnet-4-20250514, simple prompt "Translate the following to Spanish: {text}").
+- Send the (possibly translated) text to ElevenLabs API to generate speech audio.
+- For English, use a default English voice ID.
+- For Spanish, use a Spanish-language voice ID.
+- Receive the audio bytes, save to a temporary MP3 file.
+- Play the audio using `os.startfile(temp_path)` on Windows (opens default media player).
+- Wait briefly for playback to start, then return. The temp file will be cleaned up on next call or app exit.
+
+Configuration:
+- ELEVENLABS_API_KEY from environment variable
+- ANTHROPIC_API_KEY from environment variable (for translation)
+- Voice IDs: configurable constants at module level, defaults provided
+
+Function signatures:
+    def speak(text: str, lang: str = "en") -> None
+    def translate_to_spanish(text: str) -> str
+
+Edge cases:
+- If ElevenLabs API fails, fall back to printing the text to console and continue without audio.
+- If translation fails, speak the original English text and log a warning.
+- If os.startfile is not available (non-Windows), use subprocess with a fallback player.

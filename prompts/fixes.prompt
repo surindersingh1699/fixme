@@ -1,0 +1,38 @@
+Module: fixes
+Purpose: Execute Windows IT fix commands via subprocess, handling UAC elevation when needed.
+
+Input: command: str — the Windows command to run; needs_admin: bool — whether UAC elevation is required
+Output: tuple[bool, str] — (success, message)
+
+Dependencies: subprocess, ctypes, re, time
+
+Behavior:
+- Provide an `execute(command: str, needs_admin: bool = False) -> tuple[bool, str]` function.
+- If needs_admin is False, run the command via `subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)`.
+- If needs_admin is True, use `ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {command}", None, 0)` to trigger UAC elevation.
+- Return (True, stdout_or_success_message) on success, (False, error_message) on failure.
+- Provide a `get_current_ssid() -> str | None` function that runs `netsh wlan show interfaces` and parses the SSID line.
+- Provide a `get_available_fixes() -> dict` that returns the FIXES dictionary mapping fix_id to metadata.
+
+FIXES dictionary:
+  toggle_wifi:
+    commands: ["netsh wlan disconnect", "WAIT:3", "netsh wlan connect name={ssid}"]
+    needs_admin: false
+  flush_dns:
+    commands: ["ipconfig /flushdns"]
+    needs_admin: true
+  restart_network:
+    commands: ["netsh wlan disconnect", "ipconfig /flushdns", "ipconfig /release", "ipconfig /renew", "WAIT:3", "netsh wlan connect name={ssid}"]
+    needs_admin: true
+  open_credential_manager:
+    commands: ["rundll32.exe keymgr.dll,KRShowKeyMgr"]
+    needs_admin: false
+
+Special command handling:
+- "WAIT:N" means sleep for N seconds (not a real command).
+- "{ssid}" is replaced with the result of get_current_ssid() at runtime.
+
+Edge cases:
+- subprocess.TimeoutExpired: return (False, "Command timed out")
+- subprocess.CalledProcessError: return (False, stderr or str(error))
+- If SSID cannot be detected, use empty string and warn in the message.

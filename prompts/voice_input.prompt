@@ -1,0 +1,35 @@
+Module: voice_input
+Purpose: Listen for user voice input using Windows SAPI speech recognition. Supports permission mode (yes/no) and open-ended question mode. Falls back to tkinter buttons on timeout.
+
+Input: mode: str ("permission" or "open"), lang: str ("en" or "es"), timeout: int (seconds)
+Output: str — transcribed text
+
+Dependencies: win32com.client (pywin32), tkinter, threading
+
+Behavior:
+- Provide a `listen(mode: str = "permission", lang: str = "en", timeout: int = 10) -> str` function.
+- Use Windows SAPI via `win32com.client.Dispatch("SAPI.SpRecognizer")` for speech-to-text.
+- Set the recognizer language based on `lang` parameter (English or Spanish).
+- In "permission" mode: listen for short responses. Return the transcribed text.
+- In "open" mode: listen for longer speech (up to `timeout` seconds). Return the full transcription.
+- If no speech is detected within `timeout` seconds, show a tkinter popup with buttons:
+  - Permission mode: "Yes" / "No" / "Ask a question" buttons
+  - Open mode: text entry field with "Submit" button
+- Return the button label or entered text as the result.
+
+Helper functions:
+    def is_affirmative(text: str, lang: str = "en") -> bool
+        Returns True if text matches affirmative patterns:
+        English: "yes", "yeah", "yep", "sure", "okay", "ok", "go ahead", "proceed", "do it"
+        Spanish: "sí", "si", "claro", "dale", "adelante", "hazlo", "ok"
+
+    def is_negative(text: str, lang: str = "en") -> bool
+        Returns True if text matches negative patterns:
+        English: "no", "nope", "nah", "skip", "don't", "cancel"
+        Spanish: "no", "cancelar", "saltar", "para"
+
+Edge cases:
+- If SAPI is not available (not on Windows), raise RuntimeError with message.
+- If microphone is not detected, show tkinter fallback immediately.
+- If recognition confidence is very low, ask user to repeat or show fallback.
+- Thread safety: tkinter operations must happen on the main thread or in a dedicated thread with its own event loop.
