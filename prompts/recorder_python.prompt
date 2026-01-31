@@ -1,0 +1,61 @@
+---
+name: fixme/recorder
+description: Screen recording using mss frame capture and OpenCV MP4 encoding
+version: 1.0.0
+tags: [recording, screen, opencv, mss, video]
+language: python
+output: fixme/recorder.py
+---
+
+Implement screen recording using `mss` for frame capture and `opencv` for encoding to MP4 video.
+
+## Class
+
+```python
+class ScreenRecorder:
+    def __init__(self, fps: int = 10):
+    def start(self, output_path: str = None) -> None:
+    def stop(self) -> str:
+    @property
+    def is_recording(self) -> bool:
+```
+
+## Behavior
+
+### start()
+1. If `output_path` is None, default to Desktop: `FixMe_Recording_<timestamp>.mp4`
+2. Set `_recording = True`
+3. Start recording loop in a daemon thread
+
+### Recording Loop
+```
+sct = mss.mss()
+monitor = sct.monitors[1]  # primary monitor
+fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+writer = cv2.VideoWriter(output_path, fourcc, fps, (monitor["width"], monitor["height"]))
+while _recording:
+    frame = np.array(sct.grab(monitor))
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+    writer.write(frame)
+    sleep(1 / fps)  # maintain target FPS
+writer.release()
+```
+
+### stop()
+1. Set `_recording = False`
+2. Wait for thread to finish (join with timeout=5)
+3. Return the output file path
+
+## Dependencies
+
+- `mss` (pip)
+- `opencv-python` / `cv2` (pip)
+- `numpy` (pip)
+- `threading`, `time`, `os`, `datetime` (stdlib)
+
+## Edge Cases
+
+- Already recording when `start()` called → ignore, return
+- `stop()` called when not recording → return None
+- Recording thread crashes → set `_recording = False`, log error
+- Disk space check: warn if < 500MB free before starting

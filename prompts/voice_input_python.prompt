@@ -1,0 +1,52 @@
+---
+name: fixme/voice_input
+description: Windows SAPI speech recognition with tkinter fallback for permission and open-ended input
+version: 1.0.0
+tags: [sapi, speech, recognition, windows, voice]
+language: python
+output: fixme/voice_input.py
+---
+
+Implement voice input using Windows built-in SAPI speech recognition. Supports permission mode (yes/no) and open-ended question mode. Falls back to tkinter buttons on timeout.
+
+## Functions
+
+```python
+def listen(mode: str = "permission", lang: str = "en", timeout: int = 10) -> str:
+def is_affirmative(text: str, lang: str = "en") -> bool:
+def is_negative(text: str, lang: str = "en") -> bool:
+```
+
+## Behavior
+
+### listen()
+1. Create SAPI recognizer via `win32com.client.Dispatch("SAPI.SpRecognizer")`.
+2. Set recognizer language based on `lang` ("en" or "es").
+3. Listen for speech up to `timeout` seconds.
+4. Return the transcribed text as a string.
+5. If no speech detected within timeout, show a tkinter popup fallback:
+   - Permission mode: buttons "Yes" / "No" / "Ask a question"
+   - Open mode: text entry field with "Submit" button
+6. Return the button label or entered text.
+
+### is_affirmative()
+Match against patterns:
+- English: "yes", "yeah", "yep", "sure", "okay", "ok", "go ahead", "proceed", "do it"
+- Spanish: "sí", "si", "claro", "dale", "adelante", "hazlo", "ok"
+
+### is_negative()
+Match against patterns:
+- English: "no", "nope", "nah", "skip", "don't", "cancel"
+- Spanish: "no", "cancelar", "saltar", "para"
+
+## Dependencies
+
+- `pywin32` / `win32com.client` (pip on Windows)
+- `tkinter`, `threading` (stdlib)
+
+## Edge Cases
+
+- SAPI not available (not on Windows) → raise `RuntimeError` with descriptive message
+- No microphone detected → show tkinter fallback immediately
+- Low recognition confidence → ask user to repeat or show fallback
+- Thread safety: tkinter popup must run in its own thread with dedicated event loop

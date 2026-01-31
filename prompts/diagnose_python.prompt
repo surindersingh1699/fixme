@@ -1,0 +1,56 @@
+---
+name: fixme/diagnose
+description: Claude Vision API integration for IT issue diagnosis from screenshots
+version: 1.0.0
+tags: [claude, vision, diagnosis, anthropic]
+language: python
+output: fixme/diagnose.py
+---
+
+Implement a module that sends a screenshot to the Anthropic Claude Vision API and receives a structured IT diagnosis with step-by-step fix instructions.
+
+## Function
+
+```python
+def diagnose_screenshot(image_path: str) -> dict:
+```
+
+## Behavior
+
+1. Read the PNG file at `image_path` and base64 encode it.
+2. Create an `anthropic.Anthropic` client using `ANTHROPIC_API_KEY` from environment.
+3. Send to Claude API model `claude-sonnet-4-20250514` with max_tokens=2048.
+4. Use a system prompt that instructs Claude to analyze the screenshot for IT issues and respond with JSON only (no markdown fences):
+
+```json
+{
+  "diagnosis": "Human-readable explanation of the issue",
+  "category": "wifi | dns | password | other",
+  "fix_id": "toggle_wifi | flush_dns | restart_network | open_credential_manager | null",
+  "fix_description": "What the fix will do",
+  "steps": [
+    {
+      "step": 1,
+      "description": "Turn off Wi-Fi adapter",
+      "command": "netsh wlan disconnect",
+      "needs_admin": false,
+      "ui_highlight": {"element": "Wi-Fi icon", "location": "taskbar right", "action": "circle"}
+    }
+  ]
+}
+```
+
+5. The user message includes the base64 image as an `image` content block plus text: "What IT issue do you see on this screen? Diagnose and suggest a fix."
+6. Parse the JSON response text and return as a Python dict.
+
+## Dependencies
+
+- `anthropic` (pip)
+- `base64`, `json`, `os` (stdlib)
+
+## Edge Cases
+
+- Image file doesn't exist → raise `FileNotFoundError`
+- API error → let the `anthropic` library exception propagate
+- JSON parse failure → raise `ValueError` with the raw response text
+- No IT issue visible → return category "other", fix_id null, empty steps array

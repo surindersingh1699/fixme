@@ -1,0 +1,51 @@
+---
+name: fixme/tts
+description: Bilingual text-to-speech using ElevenLabs API with Spanish translation via Claude
+version: 1.0.0
+tags: [elevenlabs, tts, speech, bilingual, spanish]
+language: python
+output: fixme/tts.py
+---
+
+Implement bilingual text-to-speech using the ElevenLabs API. For Spanish output, translate text via Claude first, then send to ElevenLabs with a Spanish voice.
+
+## Functions
+
+```python
+def speak(text: str, lang: str = "en") -> None:
+def translate_to_spanish(text: str) -> str:
+```
+
+## Behavior
+
+### speak()
+1. If `lang` is "es", call `translate_to_spanish(text)` to get Spanish text.
+2. Select voice ID based on language (English voice for "en", Spanish voice for "es"). Use configurable module-level constants for voice IDs.
+3. Send text to ElevenLabs API to generate speech audio.
+4. Receive MP3 bytes, save to a temporary file.
+5. Play audio via `os.startfile(temp_path)` on Windows.
+6. Return after playback starts.
+
+### translate_to_spanish()
+1. Use `anthropic.Anthropic` client with `ANTHROPIC_API_KEY`.
+2. Send a simple message: "Translate the following text to natural Spanish. Return only the translation, nothing else: {text}"
+3. Model: `claude-sonnet-4-20250514`, max_tokens: 1024.
+4. Return the translated string.
+
+## Configuration
+
+- `ELEVENLABS_API_KEY` from environment variable
+- `ANTHROPIC_API_KEY` from environment variable
+- `ENGLISH_VOICE_ID` and `SPANISH_VOICE_ID` as module constants
+
+## Dependencies
+
+- `elevenlabs` (pip)
+- `anthropic` (pip)
+- `tempfile`, `os` (stdlib)
+
+## Edge Cases
+
+- ElevenLabs API fails → fall back to `print(f"[TTS]: {text}")` and continue without audio
+- Translation fails → speak the original English text, print warning
+- `os.startfile` not available (non-Windows) → try `subprocess.run(["open", temp_path])` as fallback

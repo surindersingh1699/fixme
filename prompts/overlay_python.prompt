@@ -1,0 +1,68 @@
+---
+name: fixme/overlay
+description: Transparent click-through screen overlay for highlighting and annotating UI elements during fixes
+version: 1.0.0
+tags: [overlay, tkinter, annotation, highlight, ui]
+language: python
+output: fixme/overlay.py
+---
+
+Implement a transparent, click-through, always-on-top overlay window that highlights and annotates screen elements during IT fixes. Draws circles, arrows, labels, and progress indicators like a live tutorial.
+
+## Class
+
+```python
+class Overlay:
+    def __init__(self):
+    def show_step(self, step_num: int, total_steps: int, description: str, ui_highlight: dict | None = None):
+    def show_success(self, step_num: int):
+    def clear_step(self):
+    def show_recording_indicator(self):
+    def hide_recording_indicator(self):
+    def destroy(self):
+```
+
+## Behavior
+
+### Window Setup
+- Fullscreen tkinter window, always on top.
+- Transparent background using `root.wm_attributes('-transparentcolor', 'white')` on Windows.
+- Canvas with white background (white areas are invisible and click-through).
+- Runs tkinter mainloop in a dedicated daemon thread.
+
+### show_step()
+1. Clear previous drawings.
+2. Draw step progress label at top-center: "Step {n} of {total}" in large bold font with dark background box.
+3. Draw description text below progress.
+4. If `ui_highlight` is provided, draw the highlight:
+   - `action: "circle"` → Red circle (stroke only, 3px width) around target area
+   - `action: "arrow"` → Red arrow pointing to target area
+   - `action: "box"` → Red rectangle around target area
+
+### Location Mapping
+`ui_highlight["location"]` maps to screen coordinates:
+- "taskbar right" → (screen_width - 100, screen_height - 30), radius 40
+- "taskbar left" → (50, screen_height - 30), radius 40
+- "taskbar center" → (screen_width / 2, screen_height - 30), radius 40
+- "center" → (screen_width / 2, screen_height / 2), radius 60
+- "top right" → (screen_width - 100, 50), radius 40
+- "top left" → (50, 50), radius 40
+- Explicit coordinates: `{"x": int, "y": int, "radius": int}`
+
+### show_success()
+Draw a green checkmark "✓" over the current step area.
+
+### show_recording_indicator()
+Small filled red circle (radius 8) at top-right corner with "REC" label.
+
+### Thread Safety
+All canvas operations are scheduled on the tkinter thread via `root.after(0, callback)`.
+
+## Dependencies
+
+- `tkinter`, `threading` (stdlib)
+
+## Edge Cases
+
+- Screen resolution changes → recalculate based on `root.winfo_screenwidth/height()`
+- Headless environment → catch tkinter initialization errors, fail silently, log warning

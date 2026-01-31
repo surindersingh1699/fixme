@@ -1,0 +1,53 @@
+---
+name: fixme/fixes
+description: Windows IT fix command execution with UAC elevation support
+version: 1.0.0
+tags: [windows, fixes, netsh, subprocess, uac]
+language: python
+output: fixme/fixes.py
+---
+
+Implement a module that executes Windows IT fix commands via subprocess, with UAC elevation for admin commands.
+
+## Functions
+
+```python
+def execute(command: str, needs_admin: bool = False) -> tuple[bool, str]:
+def get_current_ssid() -> str | None:
+def get_available_fixes() -> dict:
+```
+
+## Behavior
+
+### execute()
+- If `needs_admin` is False: run via `subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)`
+- If `needs_admin` is True: use `ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {command}", None, 0)` for UAC
+- Return `(True, stdout_or_message)` on success, `(False, error_message)` on failure
+
+### get_current_ssid()
+- Run `netsh wlan show interfaces` and parse the "SSID" line (not "BSSID")
+- Return the SSID string or None if not connected
+
+### get_available_fixes()
+Return the FIXES dictionary:
+
+| fix_id | Commands | needs_admin |
+|---|---|---|
+| toggle_wifi | netsh wlan disconnect → WAIT:3 → netsh wlan connect name={ssid} | False |
+| flush_dns | ipconfig /flushdns | True |
+| restart_network | disconnect → flushdns → release → renew → WAIT:3 → connect | True |
+| open_credential_manager | rundll32.exe keymgr.dll,KRShowKeyMgr | False |
+
+Special tokens in commands:
+- `WAIT:N` → sleep N seconds (not a subprocess command)
+- `{ssid}` → replaced at runtime with get_current_ssid() result
+
+## Dependencies
+
+- `subprocess`, `ctypes`, `re`, `time` (stdlib)
+
+## Edge Cases
+
+- `subprocess.TimeoutExpired` → return (False, "Command timed out")
+- `subprocess.CalledProcessError` → return (False, stderr or str(error))
+- SSID not detected → use empty string, include warning in returned message

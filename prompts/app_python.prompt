@@ -1,0 +1,77 @@
+---
+name: fixme/app
+description: Windows system tray application wiring all modules together as main entry point
+version: 1.0.0
+tags: [tray, pystray, app, main, windows]
+language: python
+output: fixme/app.py
+---
+
+Implement the Windows system tray application that wires all FixMe modules together. This is the main entry point.
+
+## Behavior
+
+### Startup
+1. Load `.env` via `python-dotenv`.
+2. Validate `ANTHROPIC_API_KEY` and `ELEVENLABS_API_KEY` exist in environment.
+3. If missing, show tkinter error messagebox and exit.
+4. Initialize all module instances: tts, voice_input, overlay, fixes, recorder.
+5. Create system tray app via `pystray`.
+
+### Tray Icon
+- Created with `Pillow`: 64x64 image, green circle with white "F" letter.
+
+### Tray Menu Structure
+```
+FixMe
+├── Diagnose Screen
+├── ─────
+├── Language ▸
+│   ├── ✓ English
+│   └── Español
+├── ─────
+├── Screen Recording ▸
+│   ├── Start Recording
+│   └── Stop Recording
+├── ─────
+├── Quick Fixes ▸
+│   ├── Toggle Wi-Fi
+│   └── Flush DNS
+├── ─────
+└── Quit
+```
+
+### Diagnose Screen Action
+1. Change tray icon color to yellow (scanning).
+2. In background thread:
+   a. `screenshot.take_screenshot()`
+   b. `diagnose.diagnose_screenshot(image_path)`
+   c. Delete temp screenshot file
+   d. Create `ConversationFlow` with current language
+   e. `conversation.run_fix(diagnosis_result)`
+3. Restore tray icon to green when done.
+
+### Quick Fixes
+Also go through single-step voice permission via ConversationFlow.
+
+### Language Selection
+- Store current language as app state ("en" or "es").
+- Menu items show checkmark on selected language.
+
+### Screen Recording
+- "Start Recording" → `recorder.start()`; show recording indicator on overlay
+- "Stop Recording" → `recorder.stop()`; hide indicator; show notification with file path
+
+## Dependencies
+
+- `pystray` (pip), `Pillow` (pip), `python-dotenv` (pip)
+- All fixme modules
+- `threading`, `os`, `tkinter` (stdlib)
+
+## Entry Point
+```python
+if __name__ == "__main__":
+    main()
+```
+
+PyInstaller command: `pyinstaller --onefile --windowed --icon=assets/icon.ico --name=FixMe fixme/app.py`

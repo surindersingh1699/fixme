@@ -1,0 +1,58 @@
+---
+name: fixme/conversation
+description: Voice conversation flow orchestrator enforcing ask-before-every-action permission
+version: 1.0.0
+tags: [conversation, voice, permission, orchestrator]
+language: python
+output: fixme/conversation.py
+---
+
+Implement the central orchestrator that enforces "ask before every action" via voice. Ties together TTS, voice input, overlay, and fixes modules.
+
+## Class
+
+```python
+class ConversationFlow:
+    def __init__(self, lang: str, tts, voice_input, overlay, fixes, anthropic_client):
+    def run_fix(self, diagnosis_result: dict) -> None:
+    def _ask_permission(self, step: dict) -> str:
+    def _answer_question(self, question: str, step: dict) -> str:
+```
+
+## Behavior
+
+### run_fix()
+1. Extract `steps` array from `diagnosis_result`.
+2. Speak: "I found the issue: {diagnosis}. I have {N} steps to fix it. Let's go through each one."
+3. For each step:
+   a. `overlay.show_step(step_num, total, description, ui_highlight)`
+   b. Call `_ask_permission(step)` which returns "yes", "skip", or "abort"
+   c. If "yes": `fixes.execute(step["command"], step["needs_admin"])` → speak result
+   d. If "skip": speak "Skipping step N."
+   e. If "abort": speak "Stopping the fix process." → break loop
+   f. `overlay.clear_step()`
+4. After loop: speak "All done! The fix process is complete."
+
+### _ask_permission()
+Loop until a clear answer:
+1. Speak: "Step N: I want to {description}. Shall I proceed? Say yes, no, or ask me a question."
+2. `response = voice_input.listen(mode="open", lang=self.lang, timeout=15)`
+3. If `is_affirmative(response)` → return "yes"
+4. If `is_negative(response)` → return "skip"
+5. If "stop"/"abort"/"para" in response → return "abort"
+6. Otherwise → treat as question, call `_answer_question()`, speak answer, loop back to step 1
+
+### _answer_question()
+1. Send to Claude API with context: "The user is being guided through an IT fix. Current step: {step.description}, command: {step.command}. The user asks: {question}. Answer helpfully and concisely."
+2. Return Claude's text response.
+
+## Dependencies
+
+- `anthropic` (pip) — for answering questions
+- All other modules injected as constructor dependencies
+
+## Edge Cases
+
+- All steps skipped → speak "No fixes were applied."
+- API error during question answering → speak "Sorry, I couldn't answer that. Let me ask again about this step."
+- Empty steps array → speak "No fix steps available for this issue." and return
