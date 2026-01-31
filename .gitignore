@@ -3,7 +3,8 @@ __pycache__/
 *.pyc
 dist/
 build/
-*.spec
+# Keep fixme.spec but ignore others
+# *.spec
 *.egg-info/
 .venv/
 venv/
