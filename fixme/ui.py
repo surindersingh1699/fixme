@@ -1,733 +1,667 @@
-"""Modern desktop UI for FixMe — Apple-inspired design with Siri-like voice button."""
+"""FixMe — Claude-like desktop UI with history panel and step-by-step transparency.
+
+Uses pure tkinter (no customtkinter) to avoid macOS NSWindow threading crashes.
+"""
 
 import os
 import sys
 import math
 import threading
 import time
-import warnings
+import json
+import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-import customtkinter as ctk
-from PIL import Image, ImageDraw
-
-from fixme import screenshot, diagnose, fixes, tts, voice_input
-from fixme.conversation import ConversationFlow
-from fixme.overlay import Overlay
-from fixme.recorder import ScreenRecorder
+# Lazy-import heavy / Windows-specific modules to avoid macOS crashes.
 
 
-# ─── Theme ───────────────────────────────────────────────────────────────────
+# ─── Design Tokens ────────────────────────────────────────────────────────────
 
-COLORS = {
-    "bg": "#0A0A0A",
-    "surface": "#1A1A1A",
-    "surface_hover": "#252525",
-    "border": "#2A2A2A",
-    "text": "#FAFAFA",
-    "text_secondary": "#8E8E93",
-    "accent": "#007AFF",
-    "accent_hover": "#0056CC",
-    "green": "#30D158",
-    "orange": "#FF9F0A",
-    "red": "#FF453A",
-    "purple": "#BF5AF2",
-    "voice_ring_1": "#007AFF",
-    "voice_ring_2": "#5856D6",
-    "voice_ring_3": "#AF52DE",
-    "chat_user": "#1C1C1E",
-    "chat_assistant": "#007AFF",
+P = {
+    "bg":              "#FFFFFF",
+    "surface":         "#F7F7F8",
+    "surface_hover":   "#EFEFEF",
+    "sidebar_bg":      "#F4F4F5",
+    "sidebar_hover":   "#E8E8EA",
+    "sidebar_active":  "#DDDDE0",
+    "border":          "#E5E5E7",
+    "text":            "#0D0D0D",
+    "text_secondary":  "#6B6B6F",
+    "text_muted":      "#9A9A9F",
+    "brand":           "#6366F1",
+    "brand_light":     "#818CF8",
+    "brand_dark":      "#4338CA",
+    "brand_bg":        "#EEF2FF",
+    "success":         "#10B981",
+    "success_bg":      "#ECFDF5",
+    "warning":         "#F59E0B",
+    "warning_bg":      "#FFFBEB",
+    "error":           "#EF4444",
+    "error_bg":        "#FEF2F2",
+    "orb":             "#6366F1",
+    "orb_ring_1":      "#818CF8",
+    "orb_ring_2":      "#A78BFA",
+    "orb_ring_3":      "#C084FC",
+    "orb_process":     "#8B5CF6",
+    "bubble_user":     "#6366F1",
+    "bubble_ai":       "#F7F7F8",
 }
 
-FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
+FONT = ("SF Pro Display", 13) if sys.platform == "darwin" else ("Segoe UI", 10)
+FONT_SM = (FONT[0], FONT[1] - 2)
+FONT_XS = (FONT[0], FONT[1] - 4)
+FONT_LG_BOLD = (FONT[0], FONT[1] + 1, "bold")
+FONT_BOLD = (FONT[0], FONT[1], "bold")
+
+HISTORY_PATH = Path.home() / ".fixme" / "history.json"
 
 
-# ─── Animated Voice Button ───────────────────────────────────────────────────
+# ─── History Manager ──────────────────────────────────────────────────────────
 
-class VoiceButton(ctk.CTkCanvas):
-    """Large animated Siri-like voice button with pulsing rings."""
+class HistoryManager:
+    def __init__(self):
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self._sessions = self._load()
 
-    SIZE = 180
-    INNER_R = 55
+    def _load(self):
+        if HISTORY_PATH.exists():
+            try:
+                return json.loads(HISTORY_PATH.read_text())
+            except Exception:
+                return []
+        return []
 
-    def __init__(self, master, command=None, **kwargs):
-        super().__init__(
-            master,
-            width=self.SIZE,
-            height=self.SIZE,
-            bg=COLORS["bg"],
-            highlightthickness=0,
-            **kwargs,
-        )
-        self._command = command
-        self._state = "idle"  # idle | listening | processing | success | error
-        self._pulse_phase = 0.0
-        self._animating = False
-        self._rings = []
+    def _save(self):
+        try:
+            HISTORY_PATH.write_text(json.dumps(self._sessions, indent=2))
+        except Exception:
+            pass
 
-        self.bind("<Button-1>", self._on_click)
-        self._draw_idle()
+    def new_session(self, title=None):
+        s = {
+            "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "title": title or "New conversation",
+            "created": datetime.now().isoformat(),
+            "messages": [],
+        }
+        self._sessions.insert(0, s)
+        self._save()
+        return s
 
-    def _on_click(self, event):
-        cx, cy = self.SIZE / 2, self.SIZE / 2
-        dx, dy = event.x - cx, event.y - cy
-        if math.sqrt(dx * dx + dy * dy) <= self.INNER_R + 10:
-            if self._command:
-                self._command()
+    def add_message(self, session_id, role, text):
+        for s in self._sessions:
+            if s["id"] == session_id:
+                s["messages"].append({
+                    "role": role, "text": text,
+                    "time": datetime.now().isoformat(),
+                })
+                if role == "user" and s["title"] == "New conversation":
+                    s["title"] = text[:50] + ("..." if len(text) > 50 else "")
+                self._save()
+                return
 
-    def set_state(self, state: str):
-        self._state = state
-        if state in ("listening", "processing"):
-            self._start_animation()
+    def get_sessions(self):
+        return self._sessions
+
+    def get_session(self, sid):
+        for s in self._sessions:
+            if s["id"] == sid:
+                return s
+        return None
+
+
+# ─── Voice Orb ────────────────────────────────────────────────────────────────
+
+class VoiceOrb(tk.Canvas):
+    SIZE = 130
+    R = 34
+
+    COLORS = {
+        "idle": P["orb"], "listening": P["brand"],
+        "processing": P["orb_process"], "success": P["success"], "error": P["error"],
+    }
+
+    def __init__(self, master, command=None, **kw):
+        super().__init__(master, width=self.SIZE, height=self.SIZE,
+                         bg=P["surface"], highlightthickness=0, **kw)
+        self._cmd = command
+        self._state = "idle"
+        self._phase = 0.0
+        self._anim = False
+        self.bind("<Button-1>", self._click)
+        self._draw()
+
+    def _click(self, e):
+        if math.hypot(e.x - self.SIZE / 2, e.y - self.SIZE / 2) <= self.R + 18:
+            if self._cmd:
+                self._cmd()
+
+    def set_state(self, s):
+        self._state = s
+        if s in ("listening", "processing"):
+            if not self._anim:
+                self._anim = True
+                self._tick()
         else:
-            self._stop_animation()
-            self._draw_static()
+            self._anim = False
+            self._draw()
 
-    def _start_animation(self):
-        if not self._animating:
-            self._animating = True
-            self._animate()
-
-    def _stop_animation(self):
-        self._animating = False
-
-    def _animate(self):
-        if not self._animating:
+    def _tick(self):
+        if not self._anim:
             return
-        self._pulse_phase += 0.08
-        self._draw_animated()
-        self.after(30, self._animate)
+        self._phase += 0.05
+        self._draw()
+        self.after(25, self._tick)
 
-    def _draw_idle(self):
+    def _draw(self):
         self.delete("all")
         cx, cy = self.SIZE / 2, self.SIZE / 2
-        r = self.INNER_R
+        r = self.R
+        c = self.COLORS.get(self._state, P["orb"])
 
-        # Subtle outer glow
-        for i in range(3):
-            offset = (3 - i) * 8
-            alpha_hex = format(int(20 + i * 10), "02x")
-            color = COLORS["accent"] + alpha_hex if len(COLORS["accent"]) == 7 else COLORS["accent"]
-            self.create_oval(
-                cx - r - offset, cy - r - offset,
-                cx + r + offset, cy + r + offset,
-                outline=COLORS["voice_ring_1"], width=1, stipple="gray25",
-            )
-
-        # Main circle
-        self.create_oval(
-            cx - r, cy - r, cx + r, cy + r,
-            fill=COLORS["accent"], outline="",
-        )
-
-        # Mic icon (simplified)
-        self._draw_mic_icon(cx, cy, "white")
-
-    def _draw_animated(self):
-        self.delete("all")
-        cx, cy = self.SIZE / 2, self.SIZE / 2
-        r = self.INNER_R
-        phase = self._pulse_phase
-
-        ring_colors = [COLORS["voice_ring_1"], COLORS["voice_ring_2"], COLORS["voice_ring_3"]]
-
-        # Pulsing rings
-        for i in range(3):
-            pulse = math.sin(phase + i * 0.7) * 0.5 + 0.5
-            ring_r = r + 15 + i * 12 + pulse * 8
-            width = 2.0 + pulse * 1.5
-            self.create_oval(
-                cx - ring_r, cy - ring_r,
-                cx + ring_r, cy + ring_r,
-                outline=ring_colors[i % 3], width=width,
-            )
-
-        # Main circle with slight scale pulse
-        scale = 1.0 + math.sin(phase * 1.5) * 0.03
-        sr = r * scale
-        fill = COLORS["accent"] if self._state == "listening" else COLORS["purple"]
-        self.create_oval(
-            cx - sr, cy - sr, cx + sr, cy + sr,
-            fill=fill, outline="",
-        )
-
-        # Icon
-        if self._state == "listening":
-            self._draw_mic_icon(cx, cy, "white")
-        else:
-            self._draw_dots(cx, cy, phase)
-
-    def _draw_static(self):
-        self.delete("all")
-        cx, cy = self.SIZE / 2, self.SIZE / 2
-        r = self.INNER_R
-
-        if self._state == "success":
-            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=COLORS["green"], outline="")
-            self.create_text(cx, cy, text="✓", fill="white", font=(FONT_FAMILY, 36, "bold"))
+        if self._state in ("listening", "processing"):
+            p = self._phase
+            for i, ring_c in enumerate([P["orb_ring_1"], P["orb_ring_2"], P["orb_ring_3"]]):
+                w = math.sin(p + i * 0.7) * 0.5 + 0.5
+                rr = r + 8 + i * 8 + w * 7
+                self.create_oval(cx - rr, cy - rr, cx + rr, cy + rr,
+                                 outline=ring_c, width=1.3 + w)
+            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=c, outline="")
+            if self._state == "listening":
+                bw, gap, n = 3, 4, 5
+                sx = cx - (n * bw + (n - 1) * gap) / 2
+                for i in range(n):
+                    h = 4 + math.sin(p * 3 + i * 0.9) * 8
+                    x = sx + i * (bw + gap)
+                    self.create_rectangle(x, cy - h / 2, x + bw, cy + h / 2,
+                                          fill="#FFF", outline="")
+            else:
+                for i in range(3):
+                    a = p * 2 + i * (2 * math.pi / 3)
+                    dx, dy = math.cos(a) * 8, math.sin(a) * 8
+                    self.create_oval(cx + dx - 2.5, cy + dy - 2.5,
+                                     cx + dx + 2.5, cy + dy + 2.5, fill="#FFF", outline="")
+        elif self._state == "success":
+            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=P["success"], outline="")
+            self.create_text(cx, cy, text="\u2713", fill="#FFF", font=(FONT[0], 18, "bold"))
         elif self._state == "error":
-            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=COLORS["red"], outline="")
-            self.create_text(cx, cy, text="✕", fill="white", font=(FONT_FAMILY, 36, "bold"))
+            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=P["error"], outline="")
+            self.create_text(cx, cy, text="\u2715", fill="#FFF", font=(FONT[0], 18, "bold"))
         else:
-            self._draw_idle()
-
-    def _draw_mic_icon(self, cx, cy, color):
-        # Mic body
-        self.create_rounded_rectangle(cx - 8, cy - 22, cx + 8, cy + 2, radius=8, fill=color, outline="")
-        # Mic arc
-        self.create_arc(cx - 16, cy - 18, cx + 16, cy + 14, start=180, extent=180, style="arc", outline=color, width=2.5)
-        # Mic stand
-        self.create_line(cx, cy + 14, cx, cy + 22, fill=color, width=2.5)
-        self.create_line(cx - 8, cy + 22, cx + 8, cy + 22, fill=color, width=2.5)
-
-    def _draw_dots(self, cx, cy, phase):
-        for i in range(3):
-            offset = (i - 1) * 14
-            bounce = math.sin(phase * 2 + i * 0.8) * 4
-            self.create_oval(
-                cx + offset - 4, cy + bounce - 4,
-                cx + offset + 4, cy + bounce + 4,
-                fill="white", outline="",
-            )
-
-    def create_rounded_rectangle(self, x1, y1, x2, y2, radius=10, **kwargs):
-        points = [
-            x1 + radius, y1, x2 - radius, y1,
-            x2, y1, x2, y1 + radius,
-            x2, y2 - radius, x2, y2,
-            x2 - radius, y2, x1 + radius, y2,
-            x1, y2, x1, y2 - radius,
-            x1, y1 + radius, x1, y1,
-        ]
-        return self.create_polygon(points, smooth=True, **kwargs)
+            for i in range(3):
+                gr = r + 10 + i * 8
+                self.create_oval(cx - gr, cy - gr, cx + gr, cy + gr,
+                                 outline=P["orb_ring_1"], width=0.8)
+            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=c, outline="")
+            self.create_text(cx, cy - 2, text="\U0001f3a4", font=(FONT[0], 16))
 
 
-# ─── Chat Message Bubble ────────────────────────────────────────────────────
+# ─── Scrollable Frame ─────────────────────────────────────────────────────────
 
-class ChatBubble(ctk.CTkFrame):
-    """Single chat message bubble."""
+class ScrollFrame(tk.Frame):
+    def __init__(self, master, bg="#FFFFFF", **kw):
+        super().__init__(master, bg=bg, **kw)
+        self._canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self._canvas.pack(side="left", fill="both", expand=True)
 
-    def __init__(self, master, text: str, role: str = "assistant", **kwargs):
-        is_user = role == "user"
-        super().__init__(
-            master,
-            fg_color=COLORS["chat_user"] if is_user else COLORS["chat_assistant"],
-            corner_radius=16,
-            **kwargs,
-        )
+        self.inner = tk.Frame(self._canvas, bg=bg)
+        self._win = self._canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
-        label = ctk.CTkLabel(
-            self,
-            text=text,
-            text_color="white",
-            font=(FONT_FAMILY, 13),
-            wraplength=340,
-            justify="left",
-            anchor="w",
-        )
-        label.pack(padx=14, pady=10)
+        self.inner.bind("<Configure>", lambda e: self._canvas.configure(
+            scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind("<Configure>", lambda e: self._canvas.itemconfig(
+            self._win, width=e.width))
+        self._canvas.bind("<MouseWheel>", lambda e: self._canvas.yview_scroll(
+            int(-1 * (e.delta / 120)), "units"))
+        self.inner.bind("<MouseWheel>", lambda e: self._canvas.yview_scroll(
+            int(-1 * (e.delta / 120)), "units"))
+
+    def scroll_to_bottom(self):
+        self._canvas.update_idletasks()
+        self._canvas.yview_moveto(1.0)
+
+    def clear(self):
+        for w in self.inner.winfo_children():
+            w.destroy()
 
 
-# ─── Status Indicator ────────────────────────────────────────────────────────
+# ─── Sidebar ──────────────────────────────────────────────────────────────────
 
-class StatusBar(ctk.CTkFrame):
-    """Top status bar showing connection and recording status."""
+class Sidebar(tk.Frame):
+    LANGS = [("en", "EN"), ("es", "ES"), ("pa", "PA"), ("hi", "HI"), ("fr", "FR")]
 
-    def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color=COLORS["surface"], height=36, corner_radius=0, **kwargs)
+    def __init__(self, master, on_select, on_new, **kw):
+        super().__init__(master, bg=P["sidebar_bg"], width=220, **kw)
         self.pack_propagate(False)
+        self._on_select = on_select
+        self._lang = "en"
+        self._lang_btns = []
 
-        self._status_dot = ctk.CTkLabel(
-            self, text="●", text_color=COLORS["green"],
-            font=(FONT_FAMILY, 10), width=20,
-        )
-        self._status_dot.pack(side="left", padx=(12, 4), pady=6)
+        hdr = tk.Frame(self, bg=P["sidebar_bg"], height=44)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="FixMe", bg=P["sidebar_bg"], fg=P["text"],
+                 font=(FONT[0], 15, "bold")).pack(side="left", padx=12, pady=8)
+        tk.Button(hdr, text="+", bg=P["sidebar_hover"], fg=P["text"],
+                  font=(FONT[0], 14), relief="flat", bd=0,
+                  activebackground=P["sidebar_active"],
+                  command=on_new).pack(side="right", padx=8, pady=8)
 
-        self._status_text = ctk.CTkLabel(
-            self, text="Ready", text_color=COLORS["text_secondary"],
-            font=(FONT_FAMILY, 11),
-        )
-        self._status_text.pack(side="left", pady=6)
+        tk.Frame(self, bg=P["border"], height=1).pack(fill="x")
 
-        self._rec_label = ctk.CTkLabel(
-            self, text="", text_color=COLORS["red"],
-            font=(FONT_FAMILY, 11, "bold"),
-        )
-        self._rec_label.pack(side="right", padx=12, pady=6)
+        self._list = ScrollFrame(self, bg=P["sidebar_bg"])
+        self._list.pack(fill="both", expand=True)
 
-    def set_status(self, text: str, color: str = None):
-        self._status_text.configure(text=text)
-        if color:
-            self._status_dot.configure(text_color=color)
+        tk.Frame(self, bg=P["border"], height=1).pack(fill="x", side="bottom")
+        foot = tk.Frame(self, bg=P["sidebar_bg"], height=40)
+        foot.pack(fill="x", side="bottom")
+        foot.pack_propagate(False)
+        lang_row = tk.Frame(foot, bg=P["sidebar_bg"])
+        lang_row.pack(padx=6, pady=6, fill="x")
 
-    def set_recording(self, active: bool):
-        self._rec_label.configure(text="● REC" if active else "")
+        for code, label in self.LANGS:
+            bg = P["brand"] if code == "en" else P["sidebar_hover"]
+            fg = "#FFF" if code == "en" else P["text_secondary"]
+            btn = tk.Button(lang_row, text=label, bg=bg, fg=fg,
+                            font=(FONT[0], 9, "bold"), relief="flat", bd=0,
+                            width=3, activebackground=P["brand_dark"],
+                            command=lambda c=code: self._set_lang(c))
+            btn.pack(side="left", padx=1, expand=True, fill="x")
+            self._lang_btns.append((code, btn))
+
+    def _set_lang(self, code):
+        self._lang = code
+        for c, btn in self._lang_btns:
+            if c == code:
+                btn.configure(bg=P["brand"], fg="#FFF")
+            else:
+                btn.configure(bg=P["sidebar_hover"], fg=P["text_secondary"])
+
+    @property
+    def lang_code(self):
+        return self._lang
+
+    def refresh(self, sessions, active_id=None):
+        self._list.clear()
+        today = datetime.now().strftime("%Y-%m-%d")
+        last_group = None
+        for s in sessions:
+            created = s.get("created", "")[:10]
+            group = "Today" if created == today else "Earlier"
+            if group != last_group:
+                tk.Label(self._list.inner, text=group, bg=P["sidebar_bg"],
+                         fg=P["text_muted"], font=(FONT[0], 9, "bold"),
+                         anchor="w").pack(fill="x", padx=12, pady=(8, 2))
+                last_group = group
+
+            is_active = s["id"] == active_id
+            bg = P["sidebar_active"] if is_active else P["sidebar_bg"]
+            fg = P["text"] if is_active else P["text_secondary"]
+            tk.Button(self._list.inner, text=s.get("title", "Untitled")[:30],
+                      bg=bg, fg=fg, anchor="w", font=FONT_SM, relief="flat",
+                      bd=0, padx=12, pady=4, activebackground=P["sidebar_hover"],
+                      command=lambda sid=s["id"]: self._on_select(sid),
+                      ).pack(fill="x", padx=4, pady=1)
 
 
-# ─── Main Application ────────────────────────────────────────────────────────
+# ─── Main App ─────────────────────────────────────────────────────────────────
 
-class FixMeUI(ctk.CTk):
-    """Main FixMe desktop application with modern UI."""
-
-    WIDTH = 440
-    HEIGHT = 720
+class FixMeUI(tk.Tk):
+    W, H = 880, 680
 
     def __init__(self):
         super().__init__()
-
-        # Window setup
         self.title("FixMe")
-        self.geometry(f"{self.WIDTH}x{self.HEIGHT}")
-        self.minsize(400, 600)
-        self.configure(fg_color=COLORS["bg"])
-        self.resizable(True, True)
+        self.geometry(f"{self.W}x{self.H}")
+        self.minsize(680, 480)
+        self.configure(bg=P["bg"])
 
-        # Center window on screen
         self.update_idletasks()
-        x = (self.winfo_screenwidth() - self.WIDTH) // 2
-        y = (self.winfo_screenheight() - self.HEIGHT) // 2
+        x = (self.winfo_screenwidth() - self.W) // 2
+        y = (self.winfo_screenheight() - self.H) // 2
         self.geometry(f"+{x}+{y}")
 
-        # State
-        self.lang = "en"
-        self.overlay = None
-        self.recorder = ScreenRecorder(fps=10)
-        self._diagnosing = False
-        self._messages = []
+        self._history = HistoryManager()
+        self._session = None
+        self._busy = False
+        self._build()
+        self._new_session()
 
-        # Build UI
-        self._build_ui()
+    def _build(self):
+        self.sidebar = Sidebar(self, on_select=self._load_session,
+                                on_new=self._new_session)
+        self.sidebar.pack(side="left", fill="y")
+        tk.Frame(self, bg=P["border"], width=1).pack(side="left", fill="y")
 
-        # Welcome message
-        self.after(500, lambda: self._add_message(
-            "Hi! I'm FixMe. Tap the mic to describe your issue, "
-            "or use the buttons below to diagnose your screen.",
-            "assistant",
-        ))
+        main = tk.Frame(self, bg=P["bg"])
+        main.pack(side="left", fill="both", expand=True)
 
-    def _build_ui(self):
-        # ── Status bar ──
-        self.status_bar = StatusBar(self)
-        self.status_bar.pack(fill="x")
+        top = tk.Frame(main, bg=P["bg"], height=44)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+        self._title_lbl = tk.Label(top, text="New conversation", bg=P["bg"],
+                                    fg=P["text"], font=FONT_LG_BOLD)
+        self._title_lbl.pack(side="left", padx=16, pady=8)
+        self._status_lbl = tk.Label(top, text="\u25cf Ready", bg=P["success_bg"],
+                                     fg=P["success"], font=FONT_XS, padx=8, pady=2)
+        self._status_lbl.pack(side="right", padx=16, pady=10)
+        tk.Frame(main, bg=P["border"], height=1).pack(fill="x")
 
-        # ── Separator ──
-        ctk.CTkFrame(self, fg_color=COLORS["border"], height=1).pack(fill="x")
+        self._chat = ScrollFrame(main, bg=P["bg"])
+        self._chat.pack(fill="both", expand=True)
 
-        # ── Chat area (scrollable) ──
-        self._chat_frame = ctk.CTkScrollableFrame(
-            self,
-            fg_color=COLORS["bg"],
-            scrollbar_button_color=COLORS["surface"],
-            scrollbar_button_hover_color=COLORS["surface_hover"],
-        )
-        self._chat_frame.pack(fill="both", expand=True, padx=0, pady=0)
+        bottom = tk.Frame(main, bg=P["surface"])
+        bottom.pack(fill="x", side="bottom")
 
-        # ── Voice button area ──
-        voice_area = ctk.CTkFrame(self, fg_color=COLORS["bg"], height=220)
-        voice_area.pack(fill="x")
-        voice_area.pack_propagate(False)
+        orb_row = tk.Frame(bottom, bg=P["surface"])
+        orb_row.pack(pady=(8, 0))
+        self.orb = VoiceOrb(orb_row, command=self._tap_voice)
+        self.orb.pack()
+        self._orb_lbl = tk.Label(bottom, text="Tap to speak", bg=P["surface"],
+                                  fg=P["text_secondary"], font=FONT_SM)
+        self._orb_lbl.pack(pady=(0, 4))
 
-        # Siri-like voice button
-        self.voice_btn = VoiceButton(voice_area, command=self._on_voice_tap)
-        self.voice_btn.pack(pady=(15, 5))
+        irow = tk.Frame(bottom, bg=P["surface"])
+        irow.pack(fill="x", padx=12, pady=(0, 8))
+        self._inp = tk.Entry(irow, font=FONT, bg=P["bg"], fg=P["text"],
+                              insertbackground=P["text"], relief="solid", bd=1,
+                              highlightthickness=0)
+        self._inp.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+        self._inp.bind("<Return>", self._submit_text)
+        tk.Button(irow, text="\u2191", bg=P["brand"], fg="#FFF",
+                  font=(FONT[0], 14, "bold"), relief="flat", bd=0, width=3,
+                  activebackground=P["brand_dark"],
+                  command=self._submit_text).pack(side="right")
 
-        # State label under button
-        self._voice_label = ctk.CTkLabel(
-            voice_area,
-            text="Tap to speak",
-            text_color=COLORS["text_secondary"],
-            font=(FONT_FAMILY, 12),
-        )
-        self._voice_label.pack(pady=(0, 10))
+        brow = tk.Frame(bottom, bg=P["surface"])
+        brow.pack(fill="x", padx=12, pady=(0, 8))
+        self._dbtn = tk.Button(brow, text="Diagnose Screen", bg=P["brand"],
+                                fg="#FFF", font=FONT_BOLD, relief="flat", bd=0,
+                                activebackground=P["brand_dark"], pady=6,
+                                command=self._on_diagnose)
+        self._dbtn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        tk.Button(brow, text="Screenshot", bg=P["surface_hover"],
+                  fg=P["text_secondary"], font=FONT_SM, relief="flat", bd=0,
+                  activebackground=P["border"], pady=6,
+                  command=self._on_ss).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-        # ── Separator ──
-        ctk.CTkFrame(self, fg_color=COLORS["border"], height=1).pack(fill="x")
+    # ── Sessions ──────────────────────────────────────────────────────────────
 
-        # ── Bottom action bar ──
-        bottom_bar = ctk.CTkFrame(self, fg_color=COLORS["surface"], height=110, corner_radius=0)
-        bottom_bar.pack(fill="x", side="bottom")
-        bottom_bar.pack_propagate(False)
+    def _new_session(self):
+        self._session = self._history.new_session()
+        self._refresh_sidebar()
+        self._clear_chat()
+        self._title_lbl.configure(text="New conversation")
+        self.after(300, lambda: self._msg(
+            "Hey! I'm FixMe, your AI IT assistant.\n\n"
+            "Tell me what's wrong \u2014 in any language.\n"
+            "I'll diagnose it, walk you through each fix step by step, "
+            "and ask your permission before doing anything.", "assistant"))
 
-        # Text input row
-        input_row = ctk.CTkFrame(bottom_bar, fg_color="transparent")
-        input_row.pack(fill="x", padx=12, pady=(10, 6))
-
-        self._text_input = ctk.CTkEntry(
-            input_row,
-            placeholder_text="Type a message or describe your issue...",
-            fg_color=COLORS["bg"],
-            border_color=COLORS["border"],
-            text_color=COLORS["text"],
-            placeholder_text_color=COLORS["text_secondary"],
-            font=(FONT_FAMILY, 13),
-            height=38,
-            corner_radius=19,
-        )
-        self._text_input.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self._text_input.bind("<Return>", self._on_text_submit)
-
-        send_btn = ctk.CTkButton(
-            input_row,
-            text="↑",
-            width=38,
-            height=38,
-            corner_radius=19,
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            font=(FONT_FAMILY, 18, "bold"),
-            command=self._on_text_submit,
-        )
-        send_btn.pack(side="right")
-
-        # Action buttons row
-        btn_row = ctk.CTkFrame(bottom_bar, fg_color="transparent")
-        btn_row.pack(fill="x", padx=12, pady=(0, 10))
-
-        self._diagnose_btn = ctk.CTkButton(
-            btn_row,
-            text="🔍  Diagnose Screen",
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            font=(FONT_FAMILY, 12, "bold"),
-            height=34,
-            corner_radius=17,
-            command=self._on_diagnose,
-        )
-        self._diagnose_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        self._screenshot_btn = ctk.CTkButton(
-            btn_row,
-            text="📷  Screenshot",
-            fg_color=COLORS["surface_hover"],
-            hover_color=COLORS["border"],
-            text_color=COLORS["text"],
-            font=(FONT_FAMILY, 12),
-            height=34,
-            corner_radius=17,
-            command=self._on_screenshot,
-        )
-        self._screenshot_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
-
-    # ── Chat Methods ──────────────────────────────────────────────────────────
-
-    def _add_message(self, text: str, role: str = "assistant"):
-        """Add a message bubble to the chat."""
-        self._messages.append({"text": text, "role": role, "time": datetime.now()})
-
-        # Container for alignment
-        container = ctk.CTkFrame(self._chat_frame, fg_color="transparent")
-        container.pack(fill="x", padx=12, pady=4)
-
-        bubble = ChatBubble(container, text=text, role=role)
-
-        if role == "user":
-            bubble.pack(anchor="e", padx=(40, 0))
-        else:
-            bubble.pack(anchor="w", padx=(0, 40))
-
-        # Auto-scroll to bottom
-        self._chat_frame.after(50, lambda: self._chat_frame._parent_canvas.yview_moveto(1.0))
-
-    def _add_step_message(self, step_num: int, total: int, description: str, status: str = "pending"):
-        """Add a step progress message."""
-        icons = {"pending": "○", "running": "◉", "done": "✓", "failed": "✕", "skipped": "◌"}
-        colors = {"pending": COLORS["text_secondary"], "running": COLORS["orange"],
-                  "done": COLORS["green"], "failed": COLORS["red"], "skipped": COLORS["text_secondary"]}
-
-        icon = icons.get(status, "○")
-        text = f"{icon}  Step {step_num}/{total}: {description}"
-
-        container = ctk.CTkFrame(self._chat_frame, fg_color="transparent")
-        container.pack(fill="x", padx=12, pady=2)
-
-        label = ctk.CTkLabel(
-            container,
-            text=text,
-            text_color=colors.get(status, COLORS["text"]),
-            font=(FONT_FAMILY, 12),
-            anchor="w",
-        )
-        label.pack(anchor="w")
-
-        self._chat_frame.after(50, lambda: self._chat_frame._parent_canvas.yview_moveto(1.0))
-
-    # ── Voice Interaction ─────────────────────────────────────────────────────
-
-    def _on_voice_tap(self):
-        if self._diagnosing:
+    def _load_session(self, sid):
+        s = self._history.get_session(sid)
+        if not s:
             return
-        self.voice_btn.set_state("listening")
-        self._voice_label.configure(text="Listening...", text_color=COLORS["accent"])
-        self.status_bar.set_status("Listening...", COLORS["accent"])
-        threading.Thread(target=self._voice_listen, daemon=True).start()
+        self._session = s
+        self._refresh_sidebar()
+        self._clear_chat()
+        self._title_lbl.configure(text=s.get("title", "Conversation"))
+        for m in s.get("messages", []):
+            self._msg(m["text"], m["role"], save=False)
 
-    def _voice_listen(self):
+    def _refresh_sidebar(self):
+        active = self._session["id"] if self._session else None
+        self.sidebar.refresh(self._history.get_sessions(), active)
+
+    def _clear_chat(self):
+        self._chat.clear()
+
+    # ── Chat ──────────────────────────────────────────────────────────────────
+
+    def _msg(self, text, role="assistant", save=True):
+        if save and self._session:
+            self._history.add_message(self._session["id"], role, text)
+            if role == "user":
+                self._refresh_sidebar()
+
+        is_user = role == "user"
+        bg = P["bubble_user"] if is_user else P["bubble_ai"]
+        fg = "#FFFFFF" if is_user else P["text"]
+        anchor = "e" if is_user else "w"
+
+        row = tk.Frame(self._chat.inner, bg=P["bg"])
+        row.pack(fill="x", padx=12, pady=4)
+        bubble = tk.Frame(row, bg=bg, padx=12, pady=8)
+        bubble.pack(anchor=anchor, padx=(60, 0) if is_user else (0, 60))
+        tk.Label(bubble, text=text, bg=bg, fg=fg, font=FONT,
+                 wraplength=400, justify="left", anchor="w").pack(anchor="w")
+        tk.Label(bubble, text=datetime.now().strftime("%I:%M %p"), bg=bg,
+                 fg="#C7D2FE" if is_user else P["text_muted"],
+                 font=FONT_XS).pack(anchor=anchor)
+        self._chat.after(50, self._chat.scroll_to_bottom)
+
+    def _step(self, num, total, desc, status="pending"):
+        icons = {"pending": "\u25cb", "running": "\u25cf", "done": "\u2713",
+                 "failed": "\u2715", "skipped": "\u2013"}
+        clrs = {"running": P["warning"], "done": P["success"],
+                "failed": P["error"], "pending": P["text_muted"]}
+        bgs = {"running": P["warning_bg"], "done": P["success_bg"],
+               "failed": P["error_bg"]}
+
+        row = tk.Frame(self._chat.inner, bg=P["bg"])
+        row.pack(fill="x", padx=12, pady=2)
+        card = tk.Frame(row, bg=bgs.get(status, P["surface"]), padx=10, pady=6)
+        card.pack(fill="x")
+        tk.Label(card, text=icons.get(status, "\u25cb"), bg=card["bg"],
+                 fg=clrs.get(status, P["text_muted"]),
+                 font=FONT_BOLD).pack(side="left")
+        tk.Label(card, text=f"Step {num}/{total}", bg=card["bg"],
+                 fg=P["text_muted"], font=FONT_XS).pack(side="left", padx=(6, 10))
+        tk.Label(card, text=desc, bg=card["bg"], fg=P["text"],
+                 font=FONT_SM, anchor="w").pack(side="left", fill="x", expand=True)
+        self._chat.after(50, self._chat.scroll_to_bottom)
+
+    def _set_status(self, text, color=None):
+        c = color or P["success"]
+        bg_map = {P["success"]: P["success_bg"], P["warning"]: P["warning_bg"],
+                  P["error"]: P["error_bg"], P["brand"]: P["brand_bg"]}
+        self._status_lbl.configure(text=f"\u25cf {text}", fg=c,
+                                    bg=bg_map.get(c, P["surface"]))
+
+    # ── Voice ─────────────────────────────────────────────────────────────────
+
+    def _tap_voice(self):
+        if self._busy:
+            return
+        self.orb.set_state("listening")
+        self._orb_lbl.configure(text="Listening...", fg=P["brand"])
+        self._set_status("Listening", P["brand"])
+        threading.Thread(target=self._voice_work, daemon=True).start()
+
+    def _voice_work(self):
         try:
-            response = voice_input.listen(mode="open", lang=self.lang, timeout=10)
-            if response and response.strip():
-                self.after(0, lambda: self._add_message(response, "user"))
-                self.after(0, lambda: self.voice_btn.set_state("processing"))
-                self.after(0, lambda: self._voice_label.configure(
-                    text="Processing...", text_color=COLORS["purple"]))
-                self.after(0, lambda: self.status_bar.set_status("Analyzing...", COLORS["orange"]))
-
-                # Send to Claude for a response
-                self._handle_user_input(response)
+            from fixme import voice_input
+            r = voice_input.listen(mode="open", lang=self.sidebar.lang_code, timeout=10)
+            if r and r.strip():
+                self.after(0, lambda: self._msg(r, "user"))
+                self.after(0, lambda: self.orb.set_state("processing"))
+                self.after(0, lambda: self._orb_lbl.configure(text="Thinking...", fg=P["orb_process"]))
+                self.after(0, lambda: self._set_status("Processing", P["orb_process"]))
+                self._handle(r)
             else:
-                self.after(0, lambda: self.voice_btn.set_state("idle"))
-                self.after(0, lambda: self._voice_label.configure(
-                    text="Tap to speak", text_color=COLORS["text_secondary"]))
-                self.after(0, lambda: self.status_bar.set_status("Ready", COLORS["green"]))
-        except Exception as e:
-            self.after(0, lambda: self.voice_btn.set_state("error"))
-            self.after(0, lambda: self._voice_label.configure(
-                text="Error — tap to retry", text_color=COLORS["red"]))
-            self.after(2000, lambda: self.voice_btn.set_state("idle"))
-            self.after(2000, lambda: self._voice_label.configure(
-                text="Tap to speak", text_color=COLORS["text_secondary"]))
+                self._reset()
+        except Exception:
+            self.after(0, lambda: self.orb.set_state("error"))
+            self.after(0, lambda: self._orb_lbl.configure(text="Couldn't hear \u2014 tap again", fg=P["error"]))
+            self.after(2500, self._reset)
 
-    # ── Text Input ────────────────────────────────────────────────────────────
+    def _reset(self):
+        self.after(0, lambda: self.orb.set_state("idle"))
+        self.after(0, lambda: self._orb_lbl.configure(text="Tap to speak", fg=P["text_secondary"]))
+        self.after(0, lambda: self._set_status("Ready", P["success"]))
 
-    def _on_text_submit(self, event=None):
-        text = self._text_input.get().strip()
-        if not text or self._diagnosing:
+    # ── Text ──────────────────────────────────────────────────────────────────
+
+    def _submit_text(self, e=None):
+        t = self._inp.get().strip()
+        if not t or self._busy:
             return
-        self._text_input.delete(0, "end")
-        self._add_message(text, "user")
-        self.voice_btn.set_state("processing")
-        self._voice_label.configure(text="Processing...", text_color=COLORS["purple"])
-        self.status_bar.set_status("Analyzing...", COLORS["orange"])
-        threading.Thread(target=self._handle_user_input, args=(text,), daemon=True).start()
+        self._inp.delete(0, "end")
+        self._msg(t, "user")
+        self.orb.set_state("processing")
+        self._orb_lbl.configure(text="Thinking...", fg=P["orb_process"])
+        self._set_status("Processing", P["orb_process"])
+        threading.Thread(target=self._handle, args=(t,), daemon=True).start()
 
-    def _handle_user_input(self, text: str):
-        """Process user text input — either diagnose or answer."""
-        import anthropic
-
+    def _handle(self, text):
         try:
-            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=512,
+            import anthropic
+            cl = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            lang = self.sidebar.lang_code
+            names = {"en": "English", "es": "Spanish", "pa": "Punjabi",
+                     "hi": "Hindi", "fr": "French"}
+            m = cl.messages.create(
+                model="claude-sonnet-4-20250514", max_tokens=512,
                 system=(
-                    "You are FixMe, a friendly Windows IT support assistant. "
-                    "Keep responses short (2-3 sentences). If the user describes an IT issue, "
-                    "suggest they use the 'Diagnose Screen' button for a full diagnosis. "
-                    "Be warm and helpful."
+                    f"You are FixMe, a warm IT support assistant. Respond in {names.get(lang, 'English')}. "
+                    "Keep responses concise (2-3 sentences). If the user describes a "
+                    "computer issue, suggest using the Diagnose Screen button. "
+                    "Be empathetic \u2014 many users are frustrated about tech issues."
                 ),
                 messages=[{"role": "user", "content": text}],
             )
-            reply = message.content[0].text.strip()
-        except Exception as e:
-            reply = f"I had trouble connecting. Try the Diagnose Screen button instead."
+            reply = m.content[0].text.strip()
+        except Exception:
+            reply = "I had trouble connecting. Try the Diagnose Screen button instead."
+        self.after(0, lambda: self._msg(reply, "assistant"))
+        self.after(0, lambda: self._speak(reply))
+        self._reset()
 
-        self.after(0, lambda: self._add_message(reply, "assistant"))
-        self.after(0, lambda: self._speak_async(reply))
-        self.after(0, lambda: self.voice_btn.set_state("idle"))
-        self.after(0, lambda: self._voice_label.configure(
-            text="Tap to speak", text_color=COLORS["text_secondary"]))
-        self.after(0, lambda: self.status_bar.set_status("Ready", COLORS["green"]))
-
-    # ── Diagnosis Flow ────────────────────────────────────────────────────────
+    # ── Diagnose ──────────────────────────────────────────────────────────────
 
     def _on_diagnose(self):
-        if self._diagnosing:
+        if self._busy:
             return
-        self._diagnosing = True
-        self._diagnose_btn.configure(state="disabled", text="⏳  Diagnosing...")
-        self.voice_btn.set_state("processing")
-        self._voice_label.configure(text="Scanning screen...", text_color=COLORS["orange"])
-        self.status_bar.set_status("Taking screenshot...", COLORS["orange"])
-        self._add_message("Starting screen diagnosis...", "assistant")
-        threading.Thread(target=self._run_diagnosis, daemon=True).start()
+        self._busy = True
+        self._dbtn.configure(state="disabled", text="Diagnosing...")
+        self.orb.set_state("processing")
+        self._set_status("Diagnosing", P["warning"])
+        self._msg("Scanning your screen...", "assistant")
+        threading.Thread(target=self._diag_work, daemon=True).start()
 
-    def _run_diagnosis(self):
+    def _diag_work(self):
         try:
-            # Step 1: Screenshot
-            self.after(0, lambda: self.status_bar.set_status("Capturing screen...", COLORS["orange"]))
-            image_path = screenshot.take_screenshot()
+            from fixme import screenshot, diagnose, fixes
+            from fixme.voice_input import is_affirmative, is_negative
+            lang = self.sidebar.lang_code
 
-            # Step 2: Diagnose
-            self.after(0, lambda: self.status_bar.set_status("Analyzing with AI...", COLORS["purple"]))
-            self.after(0, lambda: self._voice_label.configure(
-                text="Analyzing...", text_color=COLORS["purple"]))
-            result = diagnose.diagnose_screenshot(image_path)
-
-            # Clean up screenshot
+            self.after(0, lambda: self._set_status("Capturing", P["warning"]))
+            img = screenshot.take_screenshot()
+            self.after(0, lambda: self._set_status("Analyzing", P["orb_process"]))
+            result = diagnose.diagnose_screenshot(img)
             try:
-                os.unlink(image_path)
+                os.unlink(img)
             except OSError:
                 pass
 
-            diagnosis_text = result.get("diagnosis", "Unknown issue")
+            diag = result.get("diagnosis", "Unknown issue")
             steps = result.get("steps", [])
-
-            # Show diagnosis
-            self.after(0, lambda: self._add_message(
-                f"🔍 **Diagnosis:** {diagnosis_text}", "assistant"))
-            self.after(0, lambda: self._speak_async(f"I found the issue: {diagnosis_text}"))
+            self.after(0, lambda: self._msg(f"Diagnosis: {diag}", "assistant"))
+            self.after(0, lambda: self._speak(f"I found the issue: {diag}"))
 
             if not steps:
-                self.after(0, lambda: self._add_message(
-                    "No automated fix steps available. You may need to resolve this manually.",
-                    "assistant"))
+                self.after(0, lambda: self._msg("No automated fix steps available.", "assistant"))
                 return
 
-            self.after(0, lambda: self._add_message(
-                f"I have {len(steps)} steps to fix this. Let me walk you through each one.",
-                "assistant"))
-
+            self.after(0, lambda: self._msg(
+                f"I have {len(steps)} steps to fix this.", "assistant"))
             time.sleep(1)
 
-            # Initialize overlay
-            self.overlay = Overlay()
-
-            # Execute steps with permission
-            fixes_applied = 0
+            applied = 0
             for i, step in enumerate(steps):
-                step_num = i + 1
-                desc = step.get("description", "Unknown step")
-                command = step.get("command", "")
-                needs_admin = step.get("needs_admin", False)
-                ui_highlight = step.get("ui_highlight")
+                n, t = i + 1, len(steps)
+                desc = step.get("description", "Unknown")
+                cmd = step.get("command", "")
 
-                self.after(0, lambda d=desc, n=step_num, t=len(steps):
-                    self._add_step_message(n, t, d, "running"))
-                self.after(0, lambda d=desc, n=step_num, t=len(steps):
-                    self.status_bar.set_status(f"Step {n}/{t}: {d}", COLORS["orange"]))
+                self.after(0, lambda d=desc, sn=n, st=t: self._step(sn, st, d, "running"))
+                self.after(0, lambda sn=n, st=t: self._set_status(f"Step {sn}/{st}", P["warning"]))
+                self.after(0, lambda d=desc, sn=n: self._speak(f"Step {sn}: {d}. Shall I proceed?"))
+                self.after(0, lambda: self.orb.set_state("listening"))
 
-                if self.overlay:
-                    self.overlay.show_step(step_num, len(steps), desc, ui_highlight)
-
-                # Ask permission
-                self.after(0, lambda d=desc, n=step_num:
-                    self._speak_async(f"Step {n}: I want to {d}. Shall I proceed?"))
-                self.after(0, lambda: self.voice_btn.set_state("listening"))
-                self.after(0, lambda: self._voice_label.configure(
-                    text="Say yes, no, or ask a question", text_color=COLORS["accent"]))
-
-                response = voice_input.listen(mode="open", lang=self.lang, timeout=15)
-
-                if response:
-                    self.after(0, lambda r=response: self._add_message(r, "user"))
-
-                from fixme.voice_input import is_affirmative, is_negative
-
-                if response and is_affirmative(response, self.lang):
-                    self.after(0, lambda: self.voice_btn.set_state("processing"))
-                    self.after(0, lambda n=step_num: self._voice_label.configure(
-                        text=f"Executing step {n}...", text_color=COLORS["orange"]))
-
-                    success, msg = fixes.execute(command, needs_admin)
-
-                    if success:
-                        fixes_applied += 1
-                        self.after(0, lambda d=desc, n=step_num, t=len(steps):
-                            self._add_step_message(n, t, d, "done"))
-                        self.after(0, lambda n=step_num, m=msg:
-                            self._add_message(f"✓ Step {n} complete. {m}", "assistant"))
-                        if self.overlay:
-                            self.overlay.show_success(step_num)
-                    else:
-                        self.after(0, lambda d=desc, n=step_num, t=len(steps):
-                            self._add_step_message(n, t, d, "failed"))
-                        self.after(0, lambda n=step_num, m=msg:
-                            self._add_message(f"✕ Step {n} failed: {m}", "assistant"))
-
-                elif response and is_negative(response, self.lang):
-                    self.after(0, lambda d=desc, n=step_num, t=len(steps):
-                        self._add_step_message(n, t, d, "skipped"))
-                    self.after(0, lambda n=step_num:
-                        self._add_message(f"Skipped step {n}.", "assistant"))
-
-                elif response and any(kw in response.lower() for kw in ("stop", "abort", "quit")):
-                    self.after(0, lambda: self._add_message("Stopping the fix process.", "assistant"))
+                from fixme import voice_input
+                resp = voice_input.listen(mode="open", lang=lang, timeout=15)
+                if resp:
+                    self.after(0, lambda r=resp: self._msg(r, "user"))
+                if resp and is_affirmative(resp, lang):
+                    self.after(0, lambda: self.orb.set_state("processing"))
+                    ok, msg = fixes.execute(cmd, step.get("needs_admin", False))
+                    st_status = "done" if ok else "failed"
+                    applied += 1 if ok else 0
+                    self.after(0, lambda d=desc, sn=n, st=t, ss=st_status: self._step(sn, st, d, ss))
+                elif resp and is_negative(resp, lang):
+                    self.after(0, lambda d=desc, sn=n, st=t: self._step(sn, st, d, "skipped"))
+                elif resp and any(k in resp.lower() for k in ("stop", "abort", "quit")):
                     break
-
-                if self.overlay:
-                    self.overlay.clear_step()
-
                 time.sleep(0.5)
 
-            # Summary
-            if fixes_applied > 0:
-                summary = f"Done! {fixes_applied} of {len(steps)} steps applied successfully."
-            else:
-                summary = "No fixes were applied."
-            self.after(0, lambda: self._add_message(summary, "assistant"))
-            self.after(0, lambda: self._speak_async(summary))
-
+            summary = f"Done! {applied}/{len(steps)} steps applied." if applied else "No fixes applied."
+            self.after(0, lambda: self._msg(summary, "assistant"))
+            self.after(0, lambda: self._speak(summary))
         except Exception as e:
-            self.after(0, lambda: self._add_message(f"Diagnosis failed: {e}", "assistant"))
+            self.after(0, lambda: self._msg(f"Diagnosis failed: {e}", "assistant"))
         finally:
-            self._diagnosing = False
-            self.after(0, lambda: self._diagnose_btn.configure(
-                state="normal", text="🔍  Diagnose Screen"))
-            self.after(0, lambda: self.voice_btn.set_state("idle"))
-            self.after(0, lambda: self._voice_label.configure(
-                text="Tap to speak", text_color=COLORS["text_secondary"]))
-            self.after(0, lambda: self.status_bar.set_status("Ready", COLORS["green"]))
-            if self.overlay:
-                self.overlay.destroy()
-                self.overlay = None
+            self._busy = False
+            self.after(0, lambda: self._dbtn.configure(state="normal", text="Diagnose Screen"))
+            self._reset()
 
-    # ── Screenshot Submit ─────────────────────────────────────────────────────
+    # ── Screenshot ────────────────────────────────────────────────────────────
 
-    def _on_screenshot(self):
-        if self._diagnosing:
+    def _on_ss(self):
+        if self._busy:
             return
-        self._add_message("Taking a screenshot...", "assistant")
-        self.status_bar.set_status("Capturing...", COLORS["orange"])
-        threading.Thread(target=self._take_and_show_screenshot, daemon=True).start()
+        self._set_status("Capturing", P["warning"])
+        threading.Thread(target=self._ss_work, daemon=True).start()
 
-    def _take_and_show_screenshot(self):
+    def _ss_work(self):
         try:
-            image_path = screenshot.take_screenshot()
-            self.after(0, lambda: self._add_message(
-                f"📷 Screenshot captured: {os.path.basename(image_path)}\n"
-                "Use 'Diagnose Screen' to analyze it, or describe your issue.",
-                "assistant"))
-            self.after(0, lambda: self.status_bar.set_status("Ready", COLORS["green"]))
+            from fixme import screenshot
+            path = screenshot.take_screenshot()
+            self.after(0, lambda: self._msg(
+                f"Screenshot saved: {os.path.basename(path)}\nHit Diagnose to analyze it.", "assistant"))
         except Exception as e:
-            self.after(0, lambda: self._add_message(f"Screenshot failed: {e}", "assistant"))
-            self.after(0, lambda: self.status_bar.set_status("Ready", COLORS["green"]))
+            self.after(0, lambda: self._msg(f"Screenshot failed: {e}", "assistant"))
+        finally:
+            self.after(0, lambda: self._set_status("Ready", P["success"]))
 
-    # ── TTS Helper ────────────────────────────────────────────────────────────
+    # ── TTS ───────────────────────────────────────────────────────────────────
 
-    def _speak_async(self, text: str):
-        threading.Thread(target=tts.speak, args=(text, self.lang), daemon=True).start()
+    def _speak(self, text):
+        def w():
+            try:
+                from fixme import tts
+                tts.speak(text, self.sidebar.lang_code)
+            except Exception:
+                pass
+        threading.Thread(target=w, daemon=True).start()
 
 
-# ─── Entry Point ─────────────────────────────────────────────────────────────
+# ─── Entry ────────────────────────────────────────────────────────────────────
 
 def main():
-    """Launch the FixMe desktop application."""
-    missing_keys = []
+    missing = []
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        missing_keys.append("ANTHROPIC_API_KEY")
+        missing.append("ANTHROPIC_API_KEY")
     if not os.environ.get("ELEVENLABS_API_KEY"):
-        missing_keys.append("ELEVENLABS_API_KEY")
-
-    if missing_keys:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror(
-            "FixMe — Setup Required",
-            f"Missing API keys: {', '.join(missing_keys)}\n\n"
-            "Create a .env file with:\n"
-            "ANTHROPIC_API_KEY=sk-ant-...\n"
-            "ELEVENLABS_API_KEY=...",
-        )
-        root.destroy()
+        missing.append("ELEVENLABS_API_KEY")
+    if missing:
+        print(f"[FixMe] Missing: {', '.join(missing)}\n"
+              "Create a .env file:\n  ANTHROPIC_API_KEY=sk-ant-...\n  ELEVENLABS_API_KEY=...\n")
         sys.exit(1)
-
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("blue")
 
     app = FixMeUI()
     app.mainloop()
