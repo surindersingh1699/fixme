@@ -41,10 +41,6 @@
     "shell": {
       "open": true
     },
-    "fs": {
-      "scope": {
-        "allow": ["$HOME/.fixme/**", "$APPDATA/.fixme/**"]
-      }
-    }
+    "fs": {}
   }
 }

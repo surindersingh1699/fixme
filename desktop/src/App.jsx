@@ -5,6 +5,7 @@ import VoiceOrb from "./components/VoiceOrb";
 import InputBar from "./components/InputBar";
 import StatusBadge from "./components/StatusBadge";
 import PermissionDialog from "./components/PermissionDialog";
+import VoiceInputDialog from "./components/VoiceInputDialog";
 import { useSidecar } from "./hooks/useSidecar";
 import { useHistory } from "./hooks/useHistory";
 import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
@@ -29,6 +30,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [orbState, setOrbState] = useState("idle");
   const [permDialog, setPermDialog] = useState(null);
+  const [showVoiceDialog, setShowVoiceDialog] = useState(false);
   const permResolveRef = useRef(null);
 
   // Initialize first session
@@ -381,18 +383,34 @@ export default function App() {
         setOrbState("listening");
         setStatus("listening");
         setStatusLabel("Listening");
+      } else {
+        // Speech API not available — show text input dialog
+        setShowVoiceDialog(true);
       }
     }
   };
 
-  // Update orb when listening state changes
+  const handleVoiceDialogSubmit = (text) => {
+    setShowVoiceDialog(false);
+    setOrbState("idle");
+    handleSend(text);
+  };
+
+  const handleVoiceDialogClose = () => {
+    setShowVoiceDialog(false);
+    setOrbState("idle");
+    setStatus("ready");
+    setStatusLabel("Ready");
+  };
+
+  // Update orb when speech recognition stops (only for real speech, not dialog fallback)
   useEffect(() => {
-    if (!isListening && orbState === "listening") {
+    if (!isListening && orbState === "listening" && !showVoiceDialog) {
       setOrbState("idle");
       setStatus("ready");
       setStatusLabel("Ready");
     }
-  }, [isListening, orbState]);
+  }, [isListening, orbState, showVoiceDialog]);
 
   return (
     <div className="flex h-screen bg-[#09090B]">
@@ -437,6 +455,15 @@ export default function App() {
           step={permDialog.step}
           command={permDialog.command}
           onRespond={handlePermResponse}
+        />
+      )}
+
+      {/* Voice input fallback dialog */}
+      {showVoiceDialog && (
+        <VoiceInputDialog
+          lang={lang}
+          onSubmit={handleVoiceDialogSubmit}
+          onClose={handleVoiceDialogClose}
         />
       )}
     </div>
