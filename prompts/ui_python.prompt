@@ -1,0 +1,84 @@
+---
+name: fixme/ui
+description: Desktop chat UI with history panel, voice orb, and step-by-step fix transparency using pure tkinter
+version: 1.0.0
+tags: [ui, tkinter, chat, desktop, history, voice-orb]
+language: python
+output: fixme/ui.py
+---
+
+Implement the FixMe desktop chat UI using **pure tkinter only** (no customtkinter) to avoid macOS NSWindow threading crashes.
+
+## Design
+
+Two-pane Claude-like layout:
+- **Left sidebar** (220px): Logo + new-chat button, scrollable conversation history list with date grouping (Today / Earlier), language selector row (EN | ES | PA | HI | FR).
+- **Right main area**: Title bar with status badge, scrollable chat area with user/assistant bubbles, animated voice orb, text input row, and action buttons (Diagnose Screen, Screenshot).
+
+### Design Tokens
+
+Light theme with indigo brand (#6366F1). Colors defined in a `P` dict:
+- bg: #FFFFFF, surface: #F7F7F8, sidebar_bg: #F4F4F5
+- brand: #6366F1, success: #10B981, warning: #F59E0B, error: #EF4444
+- Bubble user: brand color, bubble AI: surface color
+
+### Fonts
+
+- macOS: SF Pro Display 13pt
+- Windows: Segoe UI 10pt
+- Variants: FONT_SM (smaller), FONT_XS (extra small), FONT_LG_BOLD, FONT_BOLD
+
+## Classes
+
+### HistoryManager
+- Persists sessions to `~/.fixme/history.json`
+- Methods: `new_session(title)`, `add_message(session_id, role, text)`, `get_sessions()`, `get_session(sid)`
+- Auto-titles session from first user message (truncated to 50 chars)
+
+### VoiceOrb(tk.Canvas)
+- 130×130 canvas, 34px radius main circle
+- States: idle (static rings + mic emoji), listening (animated pulsing rings + sound bars), processing (animated rings + rotating dots), success (green checkmark), error (red cross)
+- Animated via `after()` loop at 25ms intervals
+- Click detection uses distance from center
+
+### ScrollFrame(tk.Frame)
+- Custom scrollable frame: `tk.Canvas` + inner `tk.Frame` via `create_window`
+- Binds `<MouseWheel>` for scroll, auto-expands width on canvas resize
+- Methods: `scroll_to_bottom()`, `clear()`
+
+### Sidebar(tk.Frame)
+- Fixed 220px width, pack_propagate(False)
+- Header: "FixMe" label + "+" new-chat button
+- Body: ScrollFrame listing conversation buttons
+- Footer: Language button row; selected button gets brand color bg
+
+### FixMeUI(tk.Tk)
+- 880×680 window, centered on screen, min 680×480
+- Lazy-imports heavy modules (`anthropic`, `fixme.screenshot`, `fixme.diagnose`, etc.) inside worker methods
+- All AI/network calls run in daemon threads, UI updates via `self.after(0, ...)`
+
+## Chat Behavior
+
+- Text input: user types → Enter or ↑ button → message added → Claude claude-sonnet-4-20250514 responds
+- Voice: tap orb → listen via `fixme.voice_input.listen()` → process → respond
+- Diagnose: capture screenshot → `fixme.diagnose.diagnose_screenshot()` → show steps → voice permission loop per step → `fixme.fixes.execute()` for approved steps
+
+## System prompt for Claude
+
+"You are FixMe, a warm IT support assistant. Respond in {language}. Keep responses concise (2-3 sentences). If the user describes a computer issue, suggest using the Diagnose Screen button. Be empathetic."
+
+## Dependencies
+
+- `tkinter` (stdlib), `os`, `sys`, `math`, `threading`, `time`, `json`, `datetime`, `pathlib`
+- `python-dotenv` (pip)
+- `anthropic` (pip, lazy-imported)
+- All fixme modules (lazy-imported in worker threads)
+
+## Entry Point
+
+```python
+def main():
+    # Validate ANTHROPIC_API_KEY and ELEVENLABS_API_KEY
+    app = FixMeUI()
+    app.mainloop()
+```

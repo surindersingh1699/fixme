@@ -1,0 +1,71 @@
+---
+name: fixme/landing
+description: React landing page for FixMe downloads with dark theme and feature showcase
+version: 1.0.0
+tags: [landing, react, vite, tailwind, marketing]
+language: javascript
+output: landing/src/App.jsx
+---
+
+Build a single-page React landing page for FixMe using Vite + Tailwind CSS v4.
+
+## Theme
+
+Dark background (#09090B), indigo brand accent (#6366F1 → #818CF8 gradient). Font: Inter via Google Fonts.
+
+## Sections (top to bottom)
+
+### Nav
+- "FixMe" logo text (bold, white)
+- Links: Features, How It Works, Languages
+- "Download" CTA button (indigo gradient)
+
+### Hero
+- Large heading: "AI IT Support That Speaks Your Language"
+- Subtitle about 5-language voice support and step-by-step fixes
+- Two CTAs: "Download for Windows" (primary) and "View on GitHub" (outline)
+- Animated gradient blur blobs (indigo/violet/purple) behind text
+- Link to GitHub releases: `https://github.com/surindersingh1699/fixme/releases`
+
+### Stats Row
+- 3 stats: "5 Languages", "$0 Cost", "<30s Diagnosis"
+
+### Features Grid
+- 6 feature cards (2×3 grid on desktop, 1-col mobile):
+  1. AI Screenshot Analysis — Claude Vision reads your screen
+  2. Voice-Guided Fixes — Step-by-step with permission at each step
+  3. 5-Language Support — EN, ES, PA, HI, FR with ElevenLabs TTS
+  4. Screen Recording — Record sessions for documentation
+  5. Smart Overlay — Transparent click-through annotations
+  6. Zero Cost — Runs on free-tier APIs
+
+### How It Works
+- 3 numbered steps: Screenshot → AI Diagnosis → Guided Fix
+- Each step with icon and description
+
+### Languages
+- Interactive 5-language selector (tabs)
+- Each language shows a sample greeting and voice preview description
+
+### Comparison Table
+- "Without FixMe" vs "With FixMe" side-by-side
+- 4 comparison points (time, language, cost, trust)
+
+### CTA
+- "Ready to Fix Smarter?" with download button
+
+### Footer
+- Built with Claude, ElevenLabs, PDD
+- GitHub link, MIT license
+
+## Technical
+
+- Single App.jsx component with all sections
+- Tailwind utility classes only (no custom CSS)
+- Responsive: mobile-first with sm/md/lg breakpoints
+- All external links open in new tab
+- Smooth scroll for anchor links
+
+## Dependencies
+
+- React 19, Vite 7, Tailwind CSS v4 (@tailwindcss/vite plugin)
