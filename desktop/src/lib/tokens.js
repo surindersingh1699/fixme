@@ -1,0 +1,37 @@
+/** Design tokens matching the landing page dark theme */
+export const tokens = {
+  bg: "#09090B",
+  surface: "#18181B",
+  surfaceHover: "#27272A",
+  sidebarBg: "#0F0F12",
+  sidebarHover: "#1C1C21",
+  sidebarActive: "#27272A",
+  border: "#27272A",
+  text: "#FAFAFA",
+  textSecondary: "#A1A1AA",
+  textMuted: "#71717A",
+  brand: "#6366F1",
+  brandLight: "#818CF8",
+  brandDark: "#4F46E5",
+  brandBg: "#1E1B4B",
+  success: "#10B981",
+  successBg: "#052E16",
+  warning: "#F59E0B",
+  warningBg: "#422006",
+  error: "#EF4444",
+  errorBg: "#450A0A",
+  orbRing1: "#818CF8",
+  orbRing2: "#A78BFA",
+  orbRing3: "#C084FC",
+  orbProcess: "#8B5CF6",
+  bubbleUser: "#6366F1",
+  bubbleAi: "#18181B",
+};
+
+export const LANGS = [
+  { code: "en", label: "EN" },
+  { code: "es", label: "ES" },
+  { code: "pa", label: "PA" },
+  { code: "hi", label: "HI" },
+  { code: "fr", label: "FR" },
+];
