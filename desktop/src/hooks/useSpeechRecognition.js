@@ -11,6 +11,7 @@ const LANG_MAP = {
 export function useSpeechRecognition() {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState(null);
   const recognitionRef = useRef(null);
 
   const startListening = useCallback((lang = "en") => {
@@ -32,8 +33,10 @@ export function useSpeechRecognition() {
       setIsListening(false);
     };
 
-    recognition.onerror = () => {
+    recognition.onerror = (e) => {
+      console.warn("SpeechRecognition error:", e.error);
       setIsListening(false);
+      setError(e.error || "not-allowed");
     };
 
     recognition.onend = () => {
@@ -41,9 +44,15 @@ export function useSpeechRecognition() {
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (e) {
+      console.warn("SpeechRecognition.start() failed:", e);
+      return false;
+    }
     setIsListening(true);
     setTranscript("");
+    setError(null);
     return true;
   }, []);
 
@@ -55,5 +64,5 @@ export function useSpeechRecognition() {
     setIsListening(false);
   }, []);
 
-  return { isListening, transcript, startListening, stopListening };
+  return { isListening, transcript, error, startListening, stopListening };
 }

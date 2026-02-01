@@ -138,7 +138,7 @@ export default function VoiceOrb({ state = "idle", onClick }) {
       {/* Label */}
       <span className="absolute -bottom-5 text-[11px] text-zinc-500 font-medium">
         {state === "idle" && "Tap to speak"}
-        {state === "listening" && "Listening..."}
+        {state === "listening" && "Listening... tap to stop"}
         {state === "processing" && "Thinking..."}
         {state === "success" && "Done!"}
         {state === "error" && "Error"}

@@ -8,7 +8,6 @@ import PermissionDialog from "./components/PermissionDialog";
 import VoiceInputDialog from "./components/VoiceInputDialog";
 import { useSidecar } from "./hooks/useSidecar";
 import { useHistory } from "./hooks/useHistory";
-import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 
 const WELCOME_MSG =
   "Hey! I'm FixMe, your AI IT assistant.\n\n" +
@@ -19,9 +18,6 @@ const WELCOME_MSG =
 export default function App() {
   const { call } = useSidecar();
   const { sessions, newSession, addMessage, getSession } = useHistory();
-  const { isListening, transcript, startListening, stopListening } =
-    useSpeechRecognition();
-
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [lang, setLang] = useState("en");
   const [chatItems, setChatItems] = useState([]);
@@ -31,6 +27,7 @@ export default function App() {
   const [orbState, setOrbState] = useState("idle");
   const [permDialog, setPermDialog] = useState(null);
   const [showVoiceDialog, setShowVoiceDialog] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
   const permResolveRef = useRef(null);
 
   // Initialize first session
@@ -43,13 +40,6 @@ export default function App() {
       ]);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Handle voice transcript
-  useEffect(() => {
-    if (transcript && !isListening) {
-      handleSend(transcript);
-    }
-  }, [transcript, isListening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addChatItem = useCallback((item) => {
     setChatItems((prev) => [...prev, item]);
@@ -372,27 +362,53 @@ export default function App() {
     }
   };
 
-  const handleVoiceClick = () => {
+  const handleVoiceClick = async () => {
     if (busy) return;
-    if (isListening) {
-      stopListening();
+
+    // If already listening, cancel the recording
+    if (voiceListening) {
+      try {
+        await call("stop_listen", {});
+      } catch {
+        // ignore
+      }
+      setVoiceListening(false);
       setOrbState("idle");
-    } else {
-      const ok = startListening(lang);
-      if (ok) {
-        setOrbState("listening");
-        setStatus("listening");
-        setStatusLabel("Listening");
-      } else {
-        // Speech API not available — show text input dialog
+      setStatus("ready");
+      setStatusLabel("Ready");
+      return;
+    }
+
+    setVoiceListening(true);
+    setOrbState("listening");
+    setStatus("listening");
+    setStatusLabel("Listening... (tap to stop)");
+
+    try {
+      const result = await call("listen", { lang });
+      if (result?.error === "cancelled") {
+        // User cancelled — do nothing
+      } else if (result?.text) {
+        handleSend(result.text);
+      } else if (result?.error) {
+        // Mic failed — fall back to text input dialog
         setShowVoiceDialog(true);
       }
+    } catch {
+      // Sidecar listen failed — fall back to text input dialog
+      if (voiceListening) {
+        setShowVoiceDialog(true);
+      }
+    } finally {
+      setVoiceListening(false);
+      setOrbState("idle");
+      setStatus("ready");
+      setStatusLabel("Ready");
     }
   };
 
   const handleVoiceDialogSubmit = (text) => {
     setShowVoiceDialog(false);
-    setOrbState("idle");
     handleSend(text);
   };
 
@@ -402,15 +418,6 @@ export default function App() {
     setStatus("ready");
     setStatusLabel("Ready");
   };
-
-  // Update orb when speech recognition stops (only for real speech, not dialog fallback)
-  useEffect(() => {
-    if (!isListening && orbState === "listening" && !showVoiceDialog) {
-      setOrbState("idle");
-      setStatus("ready");
-      setStatusLabel("Ready");
-    }
-  }, [isListening, orbState, showVoiceDialog]);
 
   return (
     <div className="flex h-screen bg-[#09090B]">

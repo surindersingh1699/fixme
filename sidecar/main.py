@@ -9,11 +9,29 @@ import sys
 import traceback
 
 # Add project root to path so we can import fixme package
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# In dev: sidecar/ is next to fixme/ under project root
+# In production .app: Resources/sidecar/main.py alongside Resources/fixme/
+sidecar_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(sidecar_dir)
 sys.path.insert(0, project_root)
 
+# Also check if fixme package is next to sidecar dir (bundled resources)
+if not os.path.isdir(os.path.join(project_root, "fixme")):
+    # Fallback: check well-known dev paths
+    home = os.path.expanduser("~")
+    for candidate in [
+        os.path.join(home, "Developer", "fixme"),
+        os.path.join(home, "projects", "fixme"),
+    ]:
+        if os.path.isdir(os.path.join(candidate, "fixme")):
+            sys.path.insert(0, candidate)
+            project_root = candidate
+            break
+
 from dotenv import load_dotenv
+# Load .env from project root, then from sidecar's parent (bundled resources)
 load_dotenv(os.path.join(project_root, ".env"))
+load_dotenv(os.path.join(sidecar_dir, "..", ".env"))
 
 # Lazy imports to avoid loading everything at startup
 _modules = {}
@@ -176,6 +194,92 @@ def handle_type_text(params):
     return {"ok": True}
 
 
+_listen_stop = None  # threading.Event — signals "stop recording and transcribe"
+
+def handle_listen(params):
+    """Record audio from microphone and transcribe using speech recognition.
+
+    Records in 0.5s chunks using sounddevice. When stop_listen is called,
+    stops recording and transcribes whatever was captured so far.
+    """
+    global _listen_stop
+    import numpy as np
+    import sounddevice as sd
+    import speech_recognition as sr
+    import io
+    import wave
+    import threading
+
+    lang = params.get("lang", "en")
+    lang_map = {
+        "en": "en-US", "es": "es-ES", "pa": "pa-IN",
+        "hi": "hi-IN", "fr": "fr-FR",
+    }
+
+    stop_event = threading.Event()
+    _listen_stop = stop_event
+
+    sample_rate = 16000
+    channels = 1
+    chunk_duration = 0.5  # seconds per chunk
+    max_duration = 30  # max recording time in seconds
+    frames = []
+
+    try:
+        # Record in chunks, checking stop flag between each
+        chunks = int(max_duration / chunk_duration)
+        for _ in range(chunks):
+            if stop_event.is_set():
+                break
+            chunk = sd.rec(
+                int(chunk_duration * sample_rate),
+                samplerate=sample_rate,
+                channels=channels,
+                dtype="int16",
+            )
+            sd.wait()
+            frames.append(chunk)
+    except Exception as e:
+        _listen_stop = None
+        return {"text": "", "error": f"Microphone error: {e}"}
+    finally:
+        _listen_stop = None
+
+    if not frames:
+        return {"text": "", "error": "No audio recorded"}
+
+    # Combine all chunks into a single WAV in memory
+    audio_data = np.concatenate(frames, axis=0)
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)  # int16 = 2 bytes
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio_data.tobytes())
+    wav_buffer.seek(0)
+
+    # Feed into speech_recognition for Google transcription
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(wav_buffer) as source:
+        audio = recognizer.record(source)
+
+    try:
+        text = recognizer.recognize_google(audio, language=lang_map.get(lang, "en-US"))
+        return {"text": text, "error": None}
+    except sr.UnknownValueError:
+        return {"text": "", "error": "Could not understand audio"}
+    except sr.RequestError as e:
+        return {"text": "", "error": f"Speech recognition service error: {e}"}
+
+
+def handle_stop_listen(params):
+    """Stop an in-progress listen and trigger transcription of recorded audio."""
+    global _listen_stop
+    if _listen_stop is not None:
+        _listen_stop.set()
+    return {"ok": True}
+
+
 def handle_verify(params):
     """Take a verification screenshot and re-diagnose."""
     screenshot = _get_module("screenshot")
@@ -201,7 +305,34 @@ HANDLERS = {
     "click_at": handle_click_at,
     "type_text": handle_type_text,
     "verify": handle_verify,
+    "listen": handle_listen,
+    "stop_listen": handle_stop_listen,
 }
+
+
+import threading
+
+_stdout_lock = threading.Lock()
+
+# Methods that block and should run in a background thread
+_ASYNC_METHODS = {"listen"}
+
+
+def _send_response(resp):
+    """Thread-safe write to stdout."""
+    with _stdout_lock:
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
+
+
+def _run_handler(handler, params, req_id):
+    """Run a handler and send the response (used by background threads)."""
+    try:
+        result = handler(params)
+        _send_response({"jsonrpc": "2.0", "id": req_id, "result": result})
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        _send_response({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e)}})
 
 
 def main():
@@ -218,9 +349,7 @@ def main():
         try:
             req = json.loads(line)
         except json.JSONDecodeError as e:
-            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(e)}}
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
+            _send_response({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(e)}})
             continue
 
         req_id = req.get("id")
@@ -229,17 +358,21 @@ def main():
 
         handler = HANDLERS.get(method)
         if not handler:
-            resp = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Unknown method: {method}"}}
+            _send_response({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Unknown method: {method}"}})
+            continue
+
+        # Run blocking methods in a background thread so the main loop
+        # can still process stop_listen while listen is recording
+        if method in _ASYNC_METHODS:
+            t = threading.Thread(target=_run_handler, args=(handler, params, req_id), daemon=True)
+            t.start()
         else:
             try:
                 result = handler(params)
-                resp = {"jsonrpc": "2.0", "id": req_id, "result": result}
+                _send_response({"jsonrpc": "2.0", "id": req_id, "result": result})
             except Exception as e:
                 traceback.print_exc(file=sys.stderr)
-                resp = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e)}}
-
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+                _send_response({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e)}})
 
 
 if __name__ == "__main__":

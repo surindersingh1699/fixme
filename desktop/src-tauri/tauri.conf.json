@@ -35,7 +35,29 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../../sidecar/main.py": "sidecar/main.py",
+      "../../fixme/": "fixme/",
+      "../../.env": ".env"
+    },
+    "macOS": {
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "appPosition": {
+          "x": 200,
+          "y": 400
+        },
+        "applicationFolderPosition": {
+          "x": 600,
+          "y": 400
+        },
+        "windowSize": {
+          "width": 800,
+          "height": 530
+        }
+      }
+    }
   },
   "plugins": {
     "shell": {
