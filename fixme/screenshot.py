@@ -41,7 +41,8 @@ def take_screenshot() -> str:
         os.unlink(tmp.name)
         raise PermissionError(
             "Screenshot appears blank. Check screen capture permissions. "
-            "On Windows, ensure no other app is blocking screen capture."
+            "On macOS: System Settings → Privacy & Security → Screen Recording. "
+            "On Windows: ensure no other app is blocking screen capture."
         )
 
     return tmp.name

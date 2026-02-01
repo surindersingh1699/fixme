@@ -478,27 +478,115 @@ class FixMeUI(tk.Tk):
     def _tap_voice(self):
         if self._busy:
             return
+        # Show a voice-input dialog on the main thread (avoids NSWindow crash)
         self.orb.set_state("listening")
         self._orb_lbl.configure(text="Listening...", fg=P["brand"])
         self._set_status("Listening", P["brand"])
-        threading.Thread(target=self._voice_work, daemon=True).start()
+        self._show_voice_dialog()
 
-    def _voice_work(self):
-        try:
-            from fixme import voice_input
-            r = voice_input.listen(mode="open", lang=self.sidebar.lang_code, timeout=10)
-            if r and r.strip():
-                self.after(0, lambda: self._msg(r, "user"))
-                self.after(0, lambda: self.orb.set_state("processing"))
-                self.after(0, lambda: self._orb_lbl.configure(text="Thinking...", fg=P["orb_process"]))
-                self.after(0, lambda: self._set_status("Processing", P["orb_process"]))
-                self._handle(r)
+    def _show_voice_dialog(self):
+        """Main-thread voice input dialog using tk.Toplevel."""
+        dlg = tk.Toplevel(self)
+        dlg.title("FixMe — Voice Input")
+        dlg.geometry("420x160")
+        dlg.resizable(False, False)
+        dlg.configure(bg=P["bg"])
+        dlg.transient(self)
+        dlg.grab_set()
+
+        dlg.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 420) // 2
+        y = self.winfo_y() + (self.winfo_height() - 160) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        lang = self.sidebar.lang_code
+        prompt = {
+            "en": "Type your message:", "es": "Escriba su mensaje:",
+            "pa": "ਆਪਣਾ ਸੁਨੇਹਾ ਟਾਈਪ ਕਰੋ:", "hi": "अपना संदेश टाइप करें:",
+            "fr": "Tapez votre message:",
+        }.get(lang, "Type your message:")
+
+        tk.Label(dlg, text=prompt, bg=P["bg"], fg=P["text"],
+                 font=FONT_LG_BOLD).pack(pady=(16, 8))
+
+        entry = tk.Entry(dlg, font=FONT, bg=P["surface"], fg=P["text"],
+                         insertbackground=P["text"], relief="solid", bd=1,
+                         highlightthickness=0, width=40)
+        entry.pack(padx=16, ipady=6)
+        entry.focus_set()
+
+        def submit(e=None):
+            t = entry.get().strip()
+            dlg.destroy()
+            if t:
+                self._msg(t, "user")
+                self.orb.set_state("processing")
+                self._orb_lbl.configure(text="Thinking...", fg=P["orb_process"])
+                self._set_status("Processing", P["orb_process"])
+                threading.Thread(target=self._handle, args=(t,), daemon=True).start()
             else:
                 self._reset()
-        except Exception:
-            self.after(0, lambda: self.orb.set_state("error"))
-            self.after(0, lambda: self._orb_lbl.configure(text="Couldn't hear \u2014 tap again", fg=P["error"]))
-            self.after(2500, self._reset)
+
+        def cancel():
+            dlg.destroy()
+            self._reset()
+
+        entry.bind("<Return>", submit)
+        dlg.protocol("WM_DELETE_WINDOW", cancel)
+
+        btn_row = tk.Frame(dlg, bg=P["bg"])
+        btn_row.pack(pady=(10, 0))
+        tk.Button(btn_row, text="Send", bg=P["brand"], fg="#FFF",
+                  font=FONT_BOLD, relief="flat", bd=0, width=10,
+                  activebackground=P["brand_dark"],
+                  command=submit).pack(side="left", padx=4)
+        tk.Button(btn_row, text="Cancel", bg=P["surface_hover"],
+                  fg=P["text_secondary"], font=FONT_SM, relief="flat",
+                  bd=0, width=10, command=cancel).pack(side="left", padx=4)
+
+    def _ask_permission(self, prompt_text, lang, answer_dict, event):
+        """Show a Yes/No/Skip dialog on the main thread for diagnose steps."""
+        dlg = tk.Toplevel(self)
+        dlg.title("FixMe — Permission")
+        dlg.geometry("400x160")
+        dlg.resizable(False, False)
+        dlg.configure(bg=P["bg"])
+        dlg.transient(self)
+        dlg.grab_set()
+
+        dlg.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 400) // 2
+        y = self.winfo_y() + (self.winfo_height() - 160) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        tk.Label(dlg, text=prompt_text, bg=P["bg"], fg=P["text"],
+                 font=FONT, wraplength=360, justify="center").pack(pady=(16, 12))
+
+        def respond(val):
+            answer_dict["value"] = val
+            dlg.destroy()
+            event.set()
+
+        def on_close():
+            respond("no")
+
+        dlg.protocol("WM_DELETE_WINDOW", on_close)
+
+        yes_lbl = "Sí" if lang == "es" else "Yes"
+        no_lbl = "No"
+        skip_lbl = "Saltar" if lang == "es" else "Skip"
+
+        btn_row = tk.Frame(dlg, bg=P["bg"])
+        btn_row.pack(pady=8)
+        tk.Button(btn_row, text=yes_lbl, bg=P["success"], fg="#FFF",
+                  font=FONT_BOLD, relief="flat", bd=0, width=8,
+                  command=lambda: respond("yes")).pack(side="left", padx=4)
+        tk.Button(btn_row, text=no_lbl, bg=P["error"], fg="#FFF",
+                  font=FONT_BOLD, relief="flat", bd=0, width=8,
+                  command=lambda: respond("no")).pack(side="left", padx=4)
+        tk.Button(btn_row, text=skip_lbl, bg=P["surface_hover"],
+                  fg=P["text_secondary"], font=FONT_SM, relief="flat",
+                  bd=0, width=8, command=lambda: respond("skip")).pack(side="left", padx=4)
 
     def _reset(self):
         self.after(0, lambda: self.orb.set_state("idle"))
@@ -519,27 +607,121 @@ class FixMeUI(tk.Tk):
         threading.Thread(target=self._handle, args=(t,), daemon=True).start()
 
     def _handle(self, text):
+        import anthropic
+        _os = "macOS" if sys.platform == "darwin" else "Windows"
         try:
-            import anthropic
             cl = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
             lang = self.sidebar.lang_code
             names = {"en": "English", "es": "Spanish", "pa": "Punjabi",
                      "hi": "Hindi", "fr": "French"}
             m = cl.messages.create(
-                model="claude-sonnet-4-20250514", max_tokens=512,
+                model="claude-sonnet-4-20250514", max_tokens=1024,
                 system=(
-                    f"You are FixMe, a warm IT support assistant. Respond in {names.get(lang, 'English')}. "
-                    "Keep responses concise (2-3 sentences). If the user describes a "
-                    "computer issue, suggest using the Diagnose Screen button. "
-                    "Be empathetic \u2014 many users are frustrated about tech issues."
+                    f"You are FixMe, an IT support assistant running on {_os}. "
+                    f"Respond in {names.get(lang, 'English')}. "
+                    "When the user describes a computer problem, diagnose it and provide "
+                    f"actionable {_os} terminal commands to fix it.\n\n"
+                    "If commands are needed, end your response with a COMMANDS block:\n"
+                    "```commands\n"
+                    "description: What this does | command: the_shell_command | admin: false\n"
+                    "description: Next step | command: another_command | admin: true\n"
+                    "```\n\n"
+                    f"Use {_os}-native commands:\n"
+                    + ("- networksetup for Wi-Fi, dscacheutil/killall mDNSResponder for DNS\n"
+                       "- open -a 'App Name' to launch apps, defaults for settings\n"
+                       "- pmset for power, diskutil for disks, system_profiler for info\n"
+                       if _os == "macOS" else
+                       "- netsh for Wi-Fi, ipconfig for DNS/network\n"
+                       "- rundll32 for credential manager\n")
+                    + "\nIf the issue is conversational (greetings, questions about you, etc.), "
+                    "just respond naturally without a commands block. "
+                    "Be concise and empathetic."
                 ),
                 messages=[{"role": "user", "content": text}],
             )
             reply = m.content[0].text.strip()
-        except Exception:
-            reply = "I had trouble connecting. Try the Diagnose Screen button instead."
-        self.after(0, lambda: self._msg(reply, "assistant"))
-        self.after(0, lambda: self._speak(reply))
+        except Exception as e:
+            reply = f"I had trouble connecting: {e}"
+            self.after(0, lambda: self._msg(reply, "assistant"))
+            self._reset()
+            return
+
+        # Parse commands block if present
+        commands = []
+        display_reply = reply
+        if "```commands" in reply:
+            parts = reply.split("```commands")
+            display_reply = parts[0].strip()
+            cmd_block = parts[1].split("```")[0].strip()
+            for line in cmd_block.splitlines():
+                line = line.strip()
+                if not line or "description:" not in line:
+                    continue
+                desc = cmd = ""
+                admin = False
+                for part in line.split("|"):
+                    part = part.strip()
+                    if part.startswith("description:"):
+                        desc = part[len("description:"):].strip()
+                    elif part.startswith("command:"):
+                        cmd = part[len("command:"):].strip()
+                    elif part.startswith("admin:"):
+                        admin = part[len("admin:"):].strip().lower() == "true"
+                if desc and cmd:
+                    commands.append({"description": desc, "command": cmd, "needs_admin": admin})
+
+        self.after(0, lambda: self._msg(display_reply, "assistant"))
+        self.after(0, lambda: self._speak(display_reply))
+
+        if commands:
+            self.after(0, lambda: self._msg(
+                f"I have {len(commands)} fix steps. I'll ask permission for each.", "assistant"))
+            time.sleep(1)
+            self._run_fix_steps(commands)
+        else:
+            self._reset()
+
+    def _run_fix_steps(self, steps):
+        """Execute a list of fix steps with permission dialogs."""
+        from fixme.fixes import execute
+        from fixme.voice_input import is_affirmative, is_negative
+        lang = self.sidebar.lang_code
+        applied = 0
+
+        for i, step in enumerate(steps):
+            n, t = i + 1, len(steps)
+            desc = step.get("description", "Unknown")
+            cmd = step.get("command", "")
+            admin = step.get("needs_admin", False)
+
+            self.after(0, lambda d=desc, sn=n, st=t: self._step(sn, st, d, "running"))
+            self.after(0, lambda sn=n, st=t: self._set_status(f"Step {sn}/{st}", P["warning"]))
+
+            answer = {"value": ""}
+            evt = threading.Event()
+            self.after(0, lambda d=desc, sn=n, c=cmd: self._ask_permission(
+                f"Step {sn}: {d}\nCommand: {c}\nProceed?", lang, answer, evt))
+            evt.wait(timeout=60)
+            resp = answer["value"]
+
+            if resp:
+                self.after(0, lambda r=resp: self._msg(r, "user"))
+            if resp and is_affirmative(resp, lang):
+                self.after(0, lambda: self.orb.set_state("processing"))
+                ok, msg = execute(cmd, admin)
+                st_status = "done" if ok else "failed"
+                applied += 1 if ok else 0
+                self.after(0, lambda d=desc, sn=n, st=t, ss=st_status: self._step(sn, st, d, ss))
+                self.after(0, lambda m=msg: self._msg(f"Result: {m}", "assistant"))
+            elif resp and is_negative(resp, lang):
+                self.after(0, lambda d=desc, sn=n, st=t: self._step(sn, st, d, "skipped"))
+            elif resp and any(k in resp.lower() for k in ("stop", "abort", "quit")):
+                break
+            time.sleep(0.5)
+
+        summary = f"Done! {applied}/{len(steps)} steps applied." if applied else "No fixes applied."
+        self.after(0, lambda: self._msg(summary, "assistant"))
+        self.after(0, lambda: self._speak(summary))
         self._reset()
 
     # ── Diagnose ──────────────────────────────────────────────────────────────
@@ -593,8 +775,14 @@ class FixMeUI(tk.Tk):
                 self.after(0, lambda d=desc, sn=n: self._speak(f"Step {sn}: {d}. Shall I proceed?"))
                 self.after(0, lambda: self.orb.set_state("listening"))
 
-                from fixme import voice_input
-                resp = voice_input.listen(mode="open", lang=lang, timeout=15)
+                # Ask permission on main thread, block worker until answered
+                answer = {"value": ""}
+                evt = threading.Event()
+                self.after(0, lambda: self._ask_permission(
+                    f"Step {n}: {desc}\nProceed?", lang, answer, evt))
+                evt.wait(timeout=60)
+                resp = answer["value"]
+
                 if resp:
                     self.after(0, lambda r=resp: self._msg(r, "user"))
                 if resp and is_affirmative(resp, lang):
@@ -612,12 +800,77 @@ class FixMeUI(tk.Tk):
             summary = f"Done! {applied}/{len(steps)} steps applied." if applied else "No fixes applied."
             self.after(0, lambda: self._msg(summary, "assistant"))
             self.after(0, lambda: self._speak(summary))
+
+            # Verification: re-capture screen and check if issue is resolved
+            if applied > 0:
+                time.sleep(2)
+                self.after(0, lambda: self._set_status("Verifying fix", P["brand"]))
+                self.after(0, lambda: self._msg("Verifying if the fix worked...", "assistant"))
+                try:
+                    verify_img = screenshot.take_screenshot()
+                    verify_result = diagnose.diagnose_screenshot(verify_img)
+                    try:
+                        os.unlink(verify_img)
+                    except OSError:
+                        pass
+                    v_diag = verify_result.get("diagnosis", "")
+                    v_steps = verify_result.get("steps", [])
+                    if not v_steps:
+                        self.after(0, lambda: self._msg(
+                            "Looks good! No issues detected on screen.", "assistant"))
+                    else:
+                        self.after(0, lambda d=v_diag: self._msg(
+                            f"Still seeing an issue: {d}\nYou can try Diagnose again.", "assistant"))
+                except Exception:
+                    pass
         except Exception as e:
             self.after(0, lambda: self._msg(f"Diagnosis failed: {e}", "assistant"))
         finally:
             self._busy = False
             self.after(0, lambda: self._dbtn.configure(state="normal", text="Diagnose Screen"))
             self._reset()
+
+    # ── GUI Automation ─────────────────────────────────────────────────────────
+
+    def _click_at(self, x, y, description=""):
+        """Click at screen coordinates using pyautogui."""
+        try:
+            import pyautogui
+            pyautogui.FAILSAFE = True
+            pyautogui.click(x, y)
+            self.after(0, lambda: self._msg(
+                f"Clicked at ({x}, {y})" + (f": {description}" if description else ""),
+                "assistant"))
+            return True
+        except Exception as e:
+            self.after(0, lambda: self._msg(f"Click failed: {e}", "assistant"))
+            return False
+
+    def _type_text(self, text, interval=0.03):
+        """Type text using pyautogui."""
+        try:
+            import pyautogui
+            pyautogui.FAILSAFE = True
+            pyautogui.typewrite(text, interval=interval)
+            return True
+        except Exception as e:
+            self.after(0, lambda: self._msg(f"Typing failed: {e}", "assistant"))
+            return False
+
+    def _open_app(self, app_name):
+        """Open an application by name (cross-platform)."""
+        try:
+            if sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", "-a", app_name])
+            else:
+                import subprocess
+                subprocess.Popen(["start", app_name], shell=True)
+            self.after(0, lambda: self._msg(f"Opened {app_name}", "assistant"))
+            return True
+        except Exception as e:
+            self.after(0, lambda: self._msg(f"Failed to open {app_name}: {e}", "assistant"))
+            return False
 
     # ── Screenshot ────────────────────────────────────────────────────────────
 
@@ -662,6 +915,11 @@ def main():
         print(f"[FixMe] Missing: {', '.join(missing)}\n"
               "Create a .env file:\n  ANTHROPIC_API_KEY=sk-ant-...\n  ELEVENLABS_API_KEY=...\n")
         sys.exit(1)
+
+    # Prevent uncaught thread exceptions from crashing the app
+    def _thread_exc(args):
+        print(f"[FixMe] Thread error: {args.exc_value}")
+    threading.excepthook = _thread_exc
 
     app = FixMeUI()
     app.mainloop()

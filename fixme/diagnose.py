@@ -3,13 +3,17 @@
 import base64
 import json
 import os
+import sys
 
 import anthropic
 
 MODEL = "claude-sonnet-4-20250514"
 MAX_TOKENS = 2048
 
-SYSTEM_PROMPT = """You are an IT support diagnostic assistant. You are given a screenshot of a user's Windows PC screen.
+_IS_MAC = sys.platform == "darwin"
+_OS_NAME = "macOS" if _IS_MAC else "Windows"
+
+SYSTEM_PROMPT = f"""You are an IT support diagnostic assistant. You are given a screenshot of a user's {_OS_NAME} computer.
 
 Analyze the screenshot and:
 1. Diagnose any visible IT issue (error dialog, network problem indicator, system alert, etc.)
@@ -18,24 +22,24 @@ Analyze the screenshot and:
    - "dns" (DNS resolution failures, cannot reach websites but network connected)
    - "password" (credential prompts, password expired dialogs, credential errors)
    - "other" (anything else)
-3. Provide step-by-step fix instructions using Windows commands.
+3. Provide step-by-step fix instructions using {'macOS terminal commands (networksetup, dscacheutil, open, defaults, etc.)' if _IS_MAC else 'Windows commands'}.
 
 Respond in JSON only, no markdown fences:
-{
+{{
   "diagnosis": "Human-readable explanation of the issue seen on screen",
   "category": "wifi" | "dns" | "password" | "other",
   "fix_id": "toggle_wifi" | "flush_dns" | "restart_network" | "open_credential_manager" | null,
   "fix_description": "Human-readable description of the recommended fix",
   "steps": [
-    {
+    {{
       "step": 1,
       "description": "What this step does in plain language",
-      "command": "the Windows command to execute",
+      "command": "the {'macOS' if _IS_MAC else 'Windows'} command to execute",
       "needs_admin": false,
-      "ui_highlight": {"element": "UI element name", "location": "taskbar right", "action": "circle"} or null
-    }
+      "ui_highlight": {{"element": "UI element name", "location": "taskbar right", "action": "circle"}} or null
+    }}
   ]
-}
+}}
 
 If you cannot identify any IT issue on screen, set category to "other", fix_id to null, and steps to an empty array.
 Valid ui_highlight locations: "taskbar right", "taskbar left", "taskbar center", "center", "top right", "top left".
